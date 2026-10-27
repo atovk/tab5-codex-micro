@@ -10,6 +10,7 @@
 #include "device_settings.h"
 #include "micro_sound.h"
 #include "micro_orientation.h"
+#include "ui_locale.h"
 #include <esp_system.h>
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
@@ -46,8 +47,10 @@ void sendInput(const MicroUI::Event& event) {
 }
 
 void syncLocalSettings(bool feedback=true) {
-  const DeviceSettings::Values next{MicroUI::soundEnabled(),MicroUI::volume(),MicroUI::brightness()};
+  const DeviceSettings::Values next{MicroUI::soundEnabled(),MicroUI::volume(),MicroUI::brightness(),
+                                   UiLocale::english()};
   const bool audioChanged=next.sound!=appliedSettings.sound || next.volume!=appliedSettings.volume;
+  const bool languageChanged=next.english!=appliedSettings.english;
   if (audioChanged) {
     MicroSound::configure(next.sound,next.volume);
     if (feedback && millis()-volumePreviewAt>=120) {
@@ -58,7 +61,7 @@ void syncLocalSettings(bool feedback=true) {
     M5.Display.setBrightness(DeviceSettings::backlight(next.brightness));
   DeviceSettings::update(next);
   appliedSettings=next;
-  const bool changed=previousTheme!=MicroUI::theme() || previousPlay!=MicroUI::playing()
+  const bool changed=languageChanged || previousTheme!=MicroUI::theme() || previousPlay!=MicroUI::playing()
       || previousSettings!=MicroUI::settingsOpen();
   if (changed && feedback) MicroSound::localPress(MicroLink::capturingInputs());
   previousTheme=MicroUI::theme(); previousPlay=MicroUI::playing();
@@ -143,6 +146,10 @@ void debugCommand() {
       else if (command=="SOUND ON" || command=="SOUND OFF") {
         MicroUI::setSoundEnabled(command=="SOUND ON"); syncLocalSettings(false);
         DebugSerial.println(command);
+      } else if (command=="LANGUAGE EN" || command=="LANGUAGE ZH") {
+        UiLocale::setLanguage(command=="LANGUAGE EN" ? UiLocale::Language::English
+                                                   : UiLocale::Language::Chinese);
+        syncLocalSettings(false); DebugSerial.println(command);
       } else if (command.startsWith("VOLUME ") || command.startsWith("BRIGHTNESS ")) {
         const bool brightness=command.startsWith("BRIGHTNESS ");
         int value; char extra;
@@ -300,6 +307,8 @@ void setup() {
   M5.Display.setBrightness(60);
   uiReady=MicroUI::init();
   appliedSettings=DeviceSettings::begin();
+  UiLocale::setLanguage(appliedSettings.english ? UiLocale::Language::English
+                                              : UiLocale::Language::Chinese);
   MicroUI::setSoundEnabled(appliedSettings.sound);
   MicroUI::setVolume(appliedSettings.volume);
   MicroUI::setBrightness(appliedSettings.brightness);
@@ -310,7 +319,7 @@ void setup() {
   previousTheme=MicroUI::theme();
   if (!uiReady) { M5.Display.fillScreen(TFT_BLACK); M5.Display.setTextColor(TFT_RED); M5.Display.println("Canvas allocation failed"); }
   USB.begin();
-  DebugSerial.println("Tab5 Codex Micro 0.10.2 ready");
+  DebugSerial.println("Tab5 Codex Micro 0.11.0 ready");
 }
 void loop() {
   uint32_t now=micros();

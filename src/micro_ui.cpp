@@ -8,6 +8,7 @@
 #include "title_scroll.h"
 #include "ui_text.h"
 #include "ui_icons.h"
+#include "ui_locale.h"
 #include "agent_status.h"
 #include "agent_neon.h"
 
@@ -45,6 +46,7 @@ uint32_t MUTED = silver.secondary;
 Theme renderedTheme = Theme::Light;
 Theme persistedTheme = Theme::Light;
 uint32_t appliedThemeRevision = 0;
+uint32_t appliedLocaleRevision = 0;
 uint32_t appliedSoundRevision = 0;
 uint32_t appliedSettingsRevision = 0;
 bool renderedSoundEnabled = true;
@@ -105,7 +107,7 @@ struct InputState {
   uint32_t soundRevision = 0;
   uint8_t volume = 45;
   uint8_t brightness = 24;
-  uint8_t settingsControl = 0;  // 1: volume, 2: brightness, 3: mute, 4: blank.
+  uint8_t settingsControl = 0;  // 1: volume, 2: brightness, 3: mute, 4: blank, 5: language.
   uint32_t settingsRevision = 0;
   bool effectsFrozen = false;
 };
@@ -122,6 +124,7 @@ RenderProfile profiling;
 struct Button {
   int x, y, w, h;
   const char* title;
+  const char* englishTitle = nullptr;
 };
 
 const Button buttons[] = {
@@ -131,13 +134,17 @@ const Button buttons[] = {
   {646, 110, 194, 82, "04"},
   {852, 110, 194, 82, "05"},
   {1058, 110, 194, 82, "06"},
-  {28, 542, 150, 150, "快速"},
-  {190, 542, 150, 150, "批准"},
-  {352, 542, 150, 150, "拒绝"},
-  {514, 542, 150, 150, "分支"},
-  {676, 542, 340, 150, "语音"},
-  {1028, 542, 224, 150, "发送"},
+  {28, 542, 150, 150, "快速", "Fast"},
+  {190, 542, 150, 150, "批准", "Approve"},
+  {352, 542, 150, 150, "拒绝", "Reject"},
+  {514, 542, 150, 150, "分支", "Fork"},
+  {676, 542, 340, 150, "语音", "Voice"},
+  {1028, 542, 224, 150, "发送", "Send"},
 };
+
+const char* tr(const char* chinese, const char* englishText) {
+  return UiLocale::text(chinese, englishText);
+}
 
 uint32_t mix(uint32_t a, uint32_t b, float amount) {
   amount = fminf(1, fmaxf(0, amount));
@@ -155,6 +162,45 @@ void text(const char* value, int x, int y, uint32_t color = INK,
 void center(const char* value, int x, int y, uint32_t color = INK,
             const lgfx::IFont* font = UiFont::sans20()) {
   UiText::drawCentered(canvas, value, x, y, font, color);
+}
+
+void centerFitted(const char* value, int x, int y, int width, uint32_t color,
+                  const lgfx::IFont* preferred = UiFont::sans28()) {
+  const lgfx::IFont* font = preferred;
+  if (UiText::bounds(font, value).w > width) font = UiFont::sans24();
+  if (UiText::bounds(font, value).w > width) font = UiFont::sans20();
+  if (UiText::bounds(font, value).w > width) font = UiFont::sans16();
+  center(value, x, y, color, font);
+}
+
+const char* localizedSignalLabel(HostFeedback::Signal value) {
+  if (!UiLocale::english()) return HostFeedback::signalLabel(value);
+  using S = HostFeedback::Signal;
+  switch (value) {
+    case S::Offline: return "Host offline";
+    case S::Unknown: return "Waiting for lights";
+    case S::Off: return "Ambient off";
+    case S::Recording: return "Dictation recording";
+    case S::Processing: return "Dictation processing";
+    case S::DialMenu: return "Dial selection";
+    case S::WorkingOrSelection: return "Working / selected";
+    default: return "Host feedback";
+  }
+}
+
+const char* agentLabel(AgentStatus::Kind value) {
+  if (!UiLocale::english()) return AgentStatus::label(value);
+  using K = AgentStatus::Kind;
+  switch (value) {
+    case K::Idle: return "Ready";
+    case K::Running: return "Running";
+    case K::Unread: return "Updated";
+    case K::Attention: return "Attention";
+    case K::Error: return "Error";
+    case K::Off: return "";
+    case K::Disconnected: return "Offline";
+    default: return "Status";
+  }
 }
 
 bool sameConfig(const HostFeedback::Config& a, const HostFeedback::Config& b) {
@@ -365,7 +411,7 @@ void drawDialCenter(bool pressed, bool longPress) {
       pressed ? material->keyPressed : material->keyTop, 1.5f);
   MaterialGradient::strokeCircle(canvas, cx, cy + (pressed ? 2 : 0), 48, .8f,
       mix(material->keyTop, material->edge, pressed ? .50f : .22f));
-  center(pressed ? longPress ? "长按" : "按住" : "按下",
+  center(pressed ? longPress ? tr("长按", "Long") : tr("按住", "Held") : tr("按下", "Press"),
          cx, cy + (pressed ? 2 : 0), INK, UiFont::sans28());
 }
 
@@ -481,29 +527,40 @@ void drawMuteButton() {
   const uint32_t ink = renderedSoundEnabled ? INK : MUTED;
   UiIcons::draw(canvas, renderedSoundEnabled ? UiIcons::Icon::SpeakerOn : UiIcons::Icon::SpeakerOff,
       103, 324 + drop, 28, ink);
-  center(renderedSoundEnabled ? "声音开启" : "已静音", 185, 324 + drop, ink, UiFont::sans20());
+  center(renderedSoundEnabled ? tr("声音开启", "Sound on") : tr("已静音", "Muted"), 185, 324 + drop, ink, UiFont::sans20());
+}
+
+void drawLanguageButton() {
+  constexpr int x = 918, y = 124, w = 306, h = 72;
+  const bool pressed = renderedSettingsControl == 5;
+  paintBody(x, 96, w, 100);
+  text(tr("界面语言", "Language"), x + 12, 100, MUTED, UiFont::sans16());
+  keycap(x, y, w, h, pressed, material->accent);
+  center(tr("中文 / English", "English / 中文"), x + w / 2,
+      y + 35 + (pressed ? 2 : 0), INK, UiFont::sans24());
 }
 
 void drawSettings() {
-  text("声音与显示", 64, 132, INK, UiFont::sans32());
-  text("拖动滑杆，找到舒服的状态", 64, 182, MUTED, UiFont::sans20());
+  text(tr("声音与显示", "Sound & display"), 64, 132, INK, UiFont::sans32());
+  text(tr("拖动滑杆，找到舒服的状态", "Make the controls feel right for you"), 64, 182, MUTED, UiFont::sans20());
+  drawLanguageButton();
   for (int y : {216, 416}) {
     MaterialGradient::solidRoundRect565(canvas, 40, y, 1200, 176, 24,
         surface565(material->trayTop));
     MaterialGradient::strokeRoundRect(canvas, 40, y, 1200, 176, 24, .8f,
         mix(material->trayTop, material->edge, .4f));
   }
-  text("音量", 76, 238, INK, UiFont::sans28());
+  text(tr("音量", "Volume"), 76, 238, INK, UiFont::sans28());
   drawMuteButton();
   drawSettingsSlider(VOLUME_Y, renderedVolume, 0, renderedSettingsControl == 1);
   drawSettingsValue(VOLUME_Y, renderedVolume);
-  text("静音不会改变音量", 320, 354, MUTED, UiFont::sans16());
-  text("屏幕亮度", 76, 438, INK, UiFont::sans28());
+  text(tr("静音不会改变音量", "Muting keeps your volume setting"), 320, 354, MUTED, UiFont::sans16());
+  text(tr("屏幕亮度", "Brightness"), 76, 438, INK, UiFont::sans28());
   UiIcons::draw(canvas, UiIcons::Icon::Sun, 164, BRIGHTNESS_Y, 40, MUTED);
   drawSettingsSlider(BRIGHTNESS_Y, renderedBrightness, 10, renderedSettingsControl == 2);
   drawSettingsValue(BRIGHTNESS_Y, renderedBrightness);
-  text("最低亮度 10%", 320, 554, MUTED, UiFont::sans16());
-  center("右上角返回控制台", 640, 654, MUTED, UiFont::sans20());
+  text(tr("最低亮度 10%", "Minimum brightness: 10%"), 320, 554, MUTED, UiFont::sans16());
+  center(tr("右上角返回控制台", "Tap Back above to return to the console"), 640, 654, MUTED, UiFont::sans20());
 }
 
 void updateSettingsSlider(int y, uint8_t value, uint8_t oldValue, uint8_t minimum,
@@ -539,6 +596,10 @@ bool updateSettings(bool soundChanged) {
     drawMuteButton();
     present(72, 288, 184, 72);
   }
+  if ((renderedSettingsControl == 5) != (previousSettingsControl == 5)) {
+    drawLanguageButton();
+    present(918, 96, 306, 100);
+  }
   return changed;
 }
 
@@ -553,20 +614,21 @@ void drawHostSignal(const State& state) {
   const uint32_t ambient = zoneColor(state.hostLights.ambient);
   circleGradient(432, 49, 3, keys, keys);
   circleGradient(446, 49, 3, ambient, ambient);
-  text(HostFeedback::signalLabel(signal), 462, 41, MUTED, UiFont::sans16());
+  text(localizedSignalLabel(signal), 462, 41, MUTED, UiFont::sans16());
 }
 
 void drawHeader(const State& state) {
   UiIcons::draw(canvas, UiIcons::Icon::Logo, 51, 49, 44, INK);
   text("CODEX", 88, 27, INK, UiFont::sans32());
   text("micro", 90, 63, MUTED, UiFont::sans16());
-  center(settingsMode ? "设置" : state.lightingPreview ? "状态演示" : playMode ? "游戏" : "控制台",
+  center(settingsMode ? tr("设置", "Settings") : state.lightingPreview ? tr("状态演示", "Preview") : playMode ? tr("游戏", "Play") : tr("控制台", "Console"),
          340, 49, INK, UiFont::sans24());
   drawHostSignal(state);
   const bool synced = state.connected && state.rpc_count;
   uint32_t connection = synced ? (dark() ? 0x9DD6BB : 0x3F8065) : MUTED;
   circleGradient(687, 49, 4, connection, connection);
-  text(synced ? "主机已连接" : "等待主机", 704, 39, connection, UiFont::sans20());
+  text(synced ? tr("主机已连接", "Connected") : tr("等待主机", "Waiting for host"), 704, 39,
+       connection, UiLocale::english() && !synced ? UiFont::sans16() : UiFont::sans20());
   keycap(844, 13, 88, 72, headerHeld == 3);
   UiIcons::draw(canvas, UiIcons::Icon::Gear, 888, 49 + (headerHeld == 3 ? 2 : 0), 32,
                 settingsMode ? material->accent : INK);
@@ -574,9 +636,9 @@ void drawHeader(const State& state) {
   const int drop = headerHeld == 1 ? 2 : 0;
   UiIcons::draw(canvas, dark() ? UiIcons::Icon::Moon : UiIcons::Icon::Sun,
                 977, 49 + drop, 24, INK);
-  center(dark() ? "黑夜" : "白天", 1034, 49 + drop, INK, UiFont::sans24());
+  center(dark() ? tr("黑夜", "Night") : tr("白天", "Day"), 1034, 49 + drop, INK, UiFont::sans24());
   keycap(1111, 13, 141, 72, headerHeld == 2);
-  center(playMode || settingsMode ? "返回" : "游戏", 1181, 49 + (headerHeld == 2 ? 2 : 0), INK,
+  center(playMode || settingsMode ? tr("返回", "Back") : tr("游戏", "Play"), 1181, 49 + (headerHeld == 2 ? 2 : 0), INK,
          UiFont::sans24());
 }
 
@@ -615,7 +677,7 @@ void drawSlot(int i, const Slot& slot, bool connected, bool titlesFresh) {
   text(b.title, b.x + 18, b.y + 8 + drop, MUTED, UiFont::sans16());
   const uint32_t labelInk = style.pattern == AgentNeon::Pattern::Off ? MUTED
       : mix(INK, style.rgb, dark() ? .40f : .25f);
-  UiText::drawRight(canvas, AgentStatus::label(kind), b.x + b.w - 34,
+  UiText::drawRight(canvas, agentLabel(kind), b.x + b.w - 34,
       b.y + 5 + drop, UiFont::sans16(), labelInk);
   circleGradient(b.x + b.w - 19, b.y + 13 + drop, 3,
       lit ? accent : material->edge, lit ? accent : material->edge);
@@ -640,19 +702,19 @@ void drawSlot(int i, const Slot& slot, bool connected, bool titlesFresh) {
 const char* actionLabel(HostFeedback::Action action, const char* fallback) {
   using A = HostFeedback::Action;
   switch (action) {
-    case A::None: return "未分配";
-    case A::Fast: return "快速";
-    case A::Approve: return "批准";
-    case A::Reject: return "拒绝";
-    case A::Fork: return "分支";
-    case A::Voice: return "语音";
-    case A::Aux: return "辅助";
-    case A::Send: return "发送";
-    case A::Plan: return "计划";
-    case A::Sidebar: return "侧栏";
-    case A::Back: return "后退";
-    case A::Forward: return "前进";
-    case A::Custom: return "自定义";
+    case A::None: return tr("未分配", "Unassigned");
+    case A::Fast: return tr("快速", "Fast");
+    case A::Approve: return tr("批准", "Approve");
+    case A::Reject: return tr("拒绝", "Reject");
+    case A::Fork: return tr("分支", "Fork");
+    case A::Voice: return tr("语音", "Voice");
+    case A::Aux: return tr("辅助", "Aux");
+    case A::Send: return tr("发送", "Send");
+    case A::Plan: return tr("计划", "Plan");
+    case A::Sidebar: return tr("侧栏", "Sidebar");
+    case A::Back: return tr("后退", "Back");
+    case A::Forward: return tr("前进", "Forward");
+    case A::Custom: return tr("自定义", "Custom");
     default: return fallback;
   }
 }
@@ -684,53 +746,55 @@ const char* actionCaption(const State& state, int index, HostFeedback::Action ac
   using A = HostFeedback::Action;
   const bool fast = action == A::Fast || (index == 0 && action == A::Unknown);
   if (fast) {
-    if (!state.connected) return "桌面离线";
+    if (!state.connected) return tr("桌面离线", "Host offline");
     if (state.hostChat.fresh) {
       switch (state.hostChat.speed) {
-        case HostFeedback::Speed::Fast: return "快速·已开启";
-        case HostFeedback::Speed::UltraFast: return "极速·已开启";
-        case HostFeedback::Speed::Standard: return "快速·已关闭";
-        case HostFeedback::Speed::Default: return "聊天默认";
-        default: return "聊天档位未知";
+        case HostFeedback::Speed::Fast: return tr("快速·已开启", "Fast: on");
+        case HostFeedback::Speed::UltraFast: return tr("极速·已开启", "Ultra: on");
+        case HostFeedback::Speed::Standard: return tr("快速·已关闭", "Fast: off");
+        case HostFeedback::Speed::Default: return tr("聊天默认", "Chat default");
+        default: return tr("聊天档位未知", "Speed unknown");
       }
     }
-    return "聊天未同步";
+    return tr("聊天未同步", "Not synced");
   }
   if (action==A::Plan && state.hostChat.fresh) {
     switch (state.hostChat.mode) {
-      case HostFeedback::Mode::Plan: return "计划·已开启";
-      case HostFeedback::Mode::Default: return "计划·已关闭";
-      default: return "聊天模式未知";
+      case HostFeedback::Mode::Plan: return tr("计划·已开启", "Plan: on");
+      case HostFeedback::Mode::Default: return tr("计划·已关闭", "Plan: off");
+      default: return tr("聊天模式未知", "Mode unknown");
     }
   }
   const bool approve=action==A::Approve || (index==1 && action==A::Unknown);
   if (approve) {
-    if (!state.hostChat.fresh) return "权限未同步";
+    if (!state.hostChat.fresh) return tr("权限未同步", "Access unknown");
     switch (state.hostChat.permission) {
       case HostFeedback::Permission::FullAccess: return "Full access";
-      case HostFeedback::Permission::WorkspaceWrite: return "工作区权限";
-      case HostFeedback::Permission::ReadOnly: return "只读权限";
-      case HostFeedback::Permission::Custom: return "自定义权限";
-      default: return "权限未同步";
+      case HostFeedback::Permission::WorkspaceWrite: return tr("工作区权限", "Workspace write");
+      case HostFeedback::Permission::ReadOnly: return tr("只读权限", "Read only");
+      case HostFeedback::Permission::Custom: return tr("自定义权限", "Custom access");
+      default: return tr("权限未同步", "Access unknown");
     }
   }
   const bool voice = action == A::Voice || (index == 4 && action == A::Unknown);
   if (voice) {
     const auto signal = HostFeedback::classify(state.hostLights, state.connected);
-    if (signal == HostFeedback::Signal::Recording || signal == HostFeedback::Signal::Processing)
-      return HostFeedback::signalLabel(signal);
-    if (action == A::Unknown) return state.connected ? "映射未同步" : "桌面离线";
-    if (!state.hostConfig.fresh) return state.connected ? "配置未同步" : "桌面离线";
+    if (signal == HostFeedback::Signal::Recording)
+      return tr(HostFeedback::signalLabel(signal), "Recording");
+    if (signal == HostFeedback::Signal::Processing)
+      return tr(HostFeedback::signalLabel(signal), "Processing");
+    if (action == A::Unknown) return state.connected ? tr("映射未同步", "Not synced") : tr("桌面离线", "Host offline");
+    if (!state.hostConfig.fresh) return state.connected ? tr("配置未同步", "Not synced") : tr("桌面离线", "Host offline");
     switch (state.hostConfig.voice) {
-      case HostFeedback::Voice::PushToTalk: return "配置·按住说话";
-      case HostFeedback::Voice::Realtime: return "配置·实时语音";
-      default: return "语音模式未知";
+      case HostFeedback::Voice::PushToTalk: return tr("配置·按住说话", "Hold to talk");
+      case HostFeedback::Voice::Realtime: return tr("配置·实时语音", "Realtime voice");
+      default: return tr("语音模式未知", "Voice unknown");
     }
   }
   if (!state.hostConfig.fresh || action == A::Unknown)
-    return state.connected ? "配置未同步" : "桌面离线";
-  if (action == A::None) return "桌面未绑定";
-  return "桌面映射";
+    return state.connected ? tr("配置未同步", "Not synced") : tr("桌面离线", "Host offline");
+  if (action == A::None) return tr("桌面未绑定", "Not assigned");
+  return tr("桌面映射", "Desktop action");
 }
 
 void drawMappedAction(const State& state, int index, int layoutIndex,
@@ -758,13 +822,13 @@ void drawMappedAction(const State& state, int index, int layoutIndex,
   UiIcons::draw(canvas, actionIcon(action, index), cx, 588 + drop, 32,
       active || actualActive ? accent : ink);
   if (persistentCaption && receipt)
-    center(receipt==1 ? "已发送" : "发送未确认",cx,557+drop,accent,UiFont::sans16());
-  center(active && voice ? "已按住" : actionLabel(action, fallback),
-      cx, 635 + drop, ink, UiFont::sans28());
+    center(receipt==1 ? tr("已发送", "Sent") : tr("发送未确认", "Unconfirmed"),cx,557+drop,accent,UiFont::sans16());
+  centerFitted(active && voice ? tr("已按住", "Held") : actionLabel(action, fallback),
+      cx, 635 + drop, w - 24, ink, UiFont::sans28());
   const uint32_t captionInk=permissionCaption && state.hostChat.fresh
       && state.hostChat.permission==HostFeedback::Permission::FullAccess
       ? (dark() ? 0xDAB785 : 0x876027) : actualActive ? material->accent : MUTED;
-  center(receipt && !persistentCaption ? receipt == 1 ? "已发送" : "发送未确认" : actionCaption(state, index, action),
+  center(receipt && !persistentCaption ? receipt == 1 ? tr("已发送", "Sent") : tr("发送未确认", "Unconfirmed") : actionCaption(state, index, action),
       cx, 668 + drop, receipt && !persistentCaption ? accent : captionInk, UiFont::sans16());
   renderedActionFeedback[index] = receipt;
 }
@@ -773,11 +837,12 @@ void drawAction(int i, const State& state) {
   const auto& b = buttons[i];
   if (i == 10) {
     paintBody(b.x, b.y, b.w, b.h);
-    drawMappedAction(state, 4, i, 680, 162, 761, 10, "语音");
-    drawMappedAction(state, 5, i, 850, 162, 931, 13, "辅助");
+    drawMappedAction(state, 4, i, 680, 162, 761, 10, tr("语音", "Voice"));
+    drawMappedAction(state, 5, i, 850, 162, 931, 13, tr("辅助", "Aux"));
   } else {
     const int index = i == 11 ? 6 : i - 6;
-    drawMappedAction(state, index, i, b.x, b.w, b.x + b.w / 2, i, b.title);
+    drawMappedAction(state, index, i, b.x, b.w, b.x + b.w / 2, i,
+                     tr(b.title, b.englishTitle ? b.englishTitle : b.title));
   }
 }
 
@@ -833,11 +898,11 @@ void drawRotary(bool updateCounter = true) {
 
 const char* stickDirection() {
   const float x = controls.stickX, y = controls.stickY;
-  if (sqrtf(x * x + y * y) < .05f) return "归中";
-  if (fabsf(x) < .25f) return y < 0 ? "向上" : "向下";
-  if (fabsf(y) < .25f) return x < 0 ? "向左" : "向右";
-  if (x < 0) return y < 0 ? "左上" : "左下";
-  return y < 0 ? "右上" : "右下";
+  if (sqrtf(x * x + y * y) < .05f) return tr("归中", "Centered");
+  if (fabsf(x) < .25f) return y < 0 ? tr("向上", "Up") : tr("向下", "Down");
+  if (fabsf(y) < .25f) return x < 0 ? tr("向左", "Left") : tr("向右", "Right");
+  if (x < 0) return y < 0 ? tr("左上", "Up-left") : tr("左下", "Down-left");
+  return y < 0 ? tr("右上", "Up-right") : tr("右下", "Down-right");
 }
 
 void drawStick() {
@@ -868,19 +933,19 @@ void drawStick() {
 
 void drawEncoderConfig(const State& state) {
   const auto mode = state.hostConfig.fresh ? state.hostConfig.encoder : HostFeedback::Encoder::Unknown;
-  const char* label = "转动外环";
+  const char* label = tr("转动外环", "Turn the ring");
   switch (mode) {
-    case HostFeedback::Encoder::Composer: label = "输入导航"; break;
-    case HostFeedback::Encoder::Reasoning: label = "推理强度"; break;
-    case HostFeedback::Encoder::Scroll: label = "对话滚动"; break;
-    case HostFeedback::Encoder::Custom: label = "自定义"; break;
+    case HostFeedback::Encoder::Composer: label = tr("输入导航", "Navigation"); break;
+    case HostFeedback::Encoder::Reasoning: label = tr("推理强度", "Reasoning"); break;
+    case HostFeedback::Encoder::Scroll: label = tr("对话滚动", "Chat scroll"); break;
+    case HostFeedback::Encoder::Custom: label = tr("自定义", "Custom"); break;
     default: break;
   }
   paintTray(372, 376, 128, 74);
   center(label, 436, 398, INK, UiFont::sans20());
-  const char* caption = mode != HostFeedback::Encoder::Unknown ? "配置·随桌面"
-      : !state.connected ? "桌面离线"
-      : state.hostConfig.fresh ? "配置项未知" : "配置未同步";
+  const char* caption = mode != HostFeedback::Encoder::Unknown ? tr("配置·随桌面", "Desktop config")
+      : !state.connected ? tr("桌面离线", "Host offline")
+      : state.hostConfig.fresh ? tr("配置项未知", "Mode unknown") : tr("配置未同步", "Not synced");
   center(caption,
          436, 432, MUTED, UiFont::sans16());
 }
@@ -888,16 +953,16 @@ void drawEncoderConfig(const State& state) {
 void drawChatFeedback(const State& state) {
   const auto& chat=state.hostChat;
   paintTray(710,210,184,26);
-  const char* plan=!chat.fresh ? "计划状态未同步"
-      : chat.mode==HostFeedback::Mode::Plan ? "计划·已开启"
-      : chat.mode==HostFeedback::Mode::Default ? "计划·已关闭" : "聊天模式未知";
+  const char* plan=!chat.fresh ? tr("计划状态未同步", "Plan not synced")
+      : chat.mode==HostFeedback::Mode::Plan ? tr("计划·已开启", "Plan: on")
+      : chat.mode==HostFeedback::Mode::Default ? tr("计划·已关闭", "Plan: off") : tr("聊天模式未知", "Mode unknown");
   center(plan,802,223,chat.fresh && chat.mode==HostFeedback::Mode::Plan ? material->accent : MUTED,
       UiFont::sans20());
   paintTray(1008,378,198,75);
-  center(chat.fresh ? "指定聊天" : "聊天状态未同步",1107,390,MUTED,UiFont::sans16());
+  center(chat.fresh ? tr("指定聊天", "Tracked chat") : tr("聊天状态未同步", "Chat not synced"),1107,390,MUTED,UiFont::sans16());
   if (chat.fresh) {
     if (!paintTitle(6, chat.title, 1016, 401, 182, INK, true))
-      center("未命名聊天",1107,426,MUTED,UiFont::sans20());
+      center(tr("未命名聊天", "Untitled chat"),1107,426,MUTED,UiFont::sans20());
   } else titles[6].visible = false;
 }
 
@@ -905,13 +970,15 @@ void drawDashboard(const State& state) {
   for (int i = 0; i < 6; ++i) drawSlot(i, state.slots[i], state.connected, state.titlesFresh);
   tray(28, 208, 484, 288);
   tray(528, 208, 724, 288);
-  text("旋钮", 52, 226, INK, UiFont::sans24());
-  center("步进", 436, 290, MUTED, UiFont::sans16());
+  text(tr("旋钮", "Dial"), 52, 226, INK, UiFont::sans24());
+  center(tr("步进", "Steps"), 436, 290, MUTED, UiFont::sans16());
   drawEncoderConfig(state);
-  text("摇杆", 552, 226, INK, UiFont::sans24());
-  center("后退", 654, 352, MUTED, UiFont::sans20());
-  center("前进", 950, 352, MUTED, UiFont::sans20());
-  center("侧栏", 802, 481, MUTED, UiFont::sans20());
+  text(tr("摇杆", "Joystick"), 552, 226, INK, UiFont::sans24());
+  center(tr("后退", "Back"), 654, 352, MUTED, UiFont::sans20());
+  // Keep the English caption between the right chevron and the readout's
+  // restored rectangle at x=988, including after the stick moves.
+  center(tr("前进", "Next"), 956, 352, MUTED, UiFont::sans20());
+  center(tr("侧栏", "Sidebar"), 802, 481, MUTED, UiFont::sans20());
   drawChatFeedback(state);
   rebuildBackdrops();
   drawRotary();
@@ -1099,6 +1166,8 @@ void invalidateDisplay() { displayInvalidated=true; }
 bool render(const State& state) {
   uint32_t now = millis();
   if (!ready) return false;
+  const uint32_t localeRevision = UiLocale::revision();
+  const bool localeChanged = localeRevision != appliedLocaleRevision;
   InputState snapshot;
   MicroControls::Visual visual;
   portENTER_CRITICAL(&inputMux);
@@ -1106,7 +1175,7 @@ bool render(const State& state) {
   visual = MicroControls::visual();
   portEXIT_CRITICAL(&inputMux);
   advanceTitleClocks(snapshot, now);
-  const bool immediate = titleTestRevision != appliedTitleTestRevision || displayInvalidated || snapshot.held != held || snapshot.playMode != playMode
+  const bool immediate = localeChanged || titleTestRevision != appliedTitleTestRevision || displayInvalidated || snapshot.held != held || snapshot.playMode != playMode
       || snapshot.settingsMode != settingsMode
       || snapshot.finger != finger || snapshot.fullPresent != forceFullPresent
       || visual.revision != controls.revision
@@ -1129,7 +1198,7 @@ bool render(const State& state) {
   const bool themeChanged = snapshot.themeRevision != appliedThemeRevision;
   const bool soundChanged = snapshot.soundRevision != appliedSoundRevision;
   const bool full = !frame || snapshot.playMode != previousMode
-      || snapshot.settingsMode != previousSettingsMode || themeChanged;
+      || snapshot.settingsMode != previousSettingsMode || themeChanged || localeChanged;
   finger = snapshot.finger;
   controls = visual;
   held = visual.held;
@@ -1236,6 +1305,7 @@ bool render(const State& state) {
   previousEffectsFrozen = effectsFrozen;
   appliedTitleTestRevision = titleTestRevision;
   appliedThemeRevision = snapshot.themeRevision;
+  appliedLocaleRevision = localeRevision;
   appliedSoundRevision = snapshot.soundRevision;
   appliedSettingsRevision = snapshot.settingsRevision;
   previousVolume = renderedVolume;
@@ -1299,6 +1369,10 @@ Event touch(int16_t x, int16_t y, bool pressed) {
         }
         input.soundEnabled = !input.soundEnabled;
         ++input.soundRevision;
+      } else if (inside(x, y, 918, 116, 306, 88)) {
+        input.settingsControl = 5;
+        UiLocale::setLanguage(UiLocale::english() ? UiLocale::Language::Chinese
+                                                 : UiLocale::Language::English);
       } else if (inside(x, y, 280, 256, 944, 88)) input.settingsControl = 1;
       else if (inside(x, y, 280, 456, 944, 88)) input.settingsControl = 2;
       else input.settingsControl = 4;

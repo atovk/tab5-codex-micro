@@ -13,7 +13,7 @@ from verify_host_feedback import chat_fixture, preview
 from verify_neon import Session, require
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.10.2"
+VERSION = "0.11.0"
 
 
 def verify(output: Path) -> dict:

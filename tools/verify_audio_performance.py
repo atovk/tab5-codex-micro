@@ -20,7 +20,7 @@ from verify_neon import require
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIRMWARE = "tab5-micro-0.10.2"
+FIRMWARE = "tab5-micro-0.11.0"
 TEST_VOLUME = 22
 
 
@@ -226,7 +226,7 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, nargs="?",
-                        default=ROOT / "artifacts/audio-performance-qa-0.10.2.json")
+                        default=ROOT / "artifacts/audio-performance-qa-0.11.0.json")
     parser.add_argument("--port")
     parser.add_argument("--timeout", type=float, default=10)
     parser.add_argument("--max-render-us", type=int)

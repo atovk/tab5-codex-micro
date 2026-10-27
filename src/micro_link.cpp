@@ -5,6 +5,7 @@
 #include "micro_sound.h"
 #include "micro_orientation.h"
 #include "title_font.h"
+#include "ui_locale.h"
 #include <cmath>
 #include <Arduino.h>
 #include <algorithm>
@@ -265,12 +266,12 @@ void process() {
   response["id"]=req["id"];
   if (!strcmp(method,"device.status")) {
     JsonObject r=response["result"].to<JsonObject>();
-    r["version"]="tab5-micro-0.10.2"; r["profile_index"]=0; r["layer_index"]=0;
+    r["version"]="tab5-micro-0.11.0"; r["profile_index"]=0; r["layer_index"]=0;
     int battery=M5.Power.getBatteryLevel();
     if (battery>=0 && battery<=100) r["battery"]=battery;
     r["is_charging"]=M5.Power.isCharging()==m5::Power_Class::is_charging_t::is_charging;
   } else if (!strcmp(method,"sys.version")) {
-    response["result"]["version"]="tab5-micro-0.10.2";
+    response["result"]["version"]="tab5-micro-0.11.0";
   } else if (!strcmp(method,"v.oai.thstatus")) {
     for (JsonObject item:req["params"].as<JsonArray>()) {
       int i=item["id"]|-1; if (i<0 || i>5) continue;
@@ -497,8 +498,9 @@ bool previewHostState(const char *payload) {
 void diagnostics() {
   RxDiagnostics snapshot;
   portENTER_CRITICAL(&rxLock); snapshot=rx; portEXIT_CRITICAL(&rxLock);
-  JsonDocument d; d["firmware"]="tab5-micro-0.10.2"; d["usb_ready"]=hid.ready(); d["usb_mounted"]=tud_mounted();
+  JsonDocument d; d["firmware"]="tab5-micro-0.11.0"; d["usb_ready"]=hid.ready(); d["usb_mounted"]=tud_mounted();
   d["theme"]=MicroUI::theme()==MicroUI::Theme::Dark ? "dark" : "light";
+  d["language"]=UiLocale::english() ? "en" : "zh";
   d["uptime_ms"]=millis();
   d["title_font"]["loaded"]=UiTitleFont::loaded();
   d["title_font"]["glyphs"]=UiTitleFont::glyphCount();

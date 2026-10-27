@@ -18,7 +18,7 @@ from verify_host_feedback import chat_fixture, check_fixture, feedback_snapshot,
 from verify_neon import Session, check_safety, require
 
 ARTIFACTS = Path(__file__).resolve().parents[1] / "artifacts"
-VERSION = "0.10.2"
+VERSION = "0.11.0"
 FIRMWARE = f"tab5-micro-{VERSION}"
 
 

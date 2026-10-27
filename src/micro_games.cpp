@@ -2,6 +2,7 @@
 #include "material_gradient.h"
 #include "ui_font.h"
 #include "ui_text.h"
+#include "ui_locale.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,6 +25,8 @@ bool started = false, sceneChanged = true;
 bool darkTheme = true;
 uint32_t lastTick = 0, previousPress = 0;
 uint32_t gameTicks = 0, launchPress = 0;
+uint32_t renderedLanguageRevision = 0;
+const char* tr(const char* zh, const char* en) { return UiLocale::text(zh, en); }
 uint32_t scores[3] = {}, best[3] = {};
 bool tiles[ROWS][COLS] = {};
 Rect dirty[ROWS * COLS];
@@ -143,7 +146,12 @@ void raised(M5Canvas& c, int x, int y, int w, int h, int radius = 18,
 }
 void button(M5Canvas& c, const char* s, int x, int y, int w, int h, bool held = false, uint32_t accent = CYAN) {
   raised(c, x, y, w, h, 14, held, accent);
-  label(c, s, x + w / 2, y + h / 2 + (held ? 1 : -3), accent, true, 28);
+  int size = 28;
+  for (int candidate : {28, 24, 20, 16}) {
+    size = candidate;
+    if (UiText::bounds(fontFor(size), s).w <= w - 20) break;
+  }
+  label(c, s, x + w / 2, y + h / 2 + (held ? 1 : -3), accent, true, size);
 }
 int index() { return game == Game::Plane ? 0 : game == Game::Blocks ? 1 : 2; }
 void endGame() {
@@ -234,7 +242,7 @@ void drawPlane(M5Canvas& c, uint32_t now) {
     c.fillTriangle(x - 8, y + 27, x + 8, y + 27, x, y + 38, color(AMBER));
     if (now < hurtUntil) MaterialGradient::strokeCircle(c, x, y, 37, 1.f, GREEN, 210);
   }
-  label(c, "拖动飞船躲避敌机 · 自动射击", 640, 662, MUTED, true, 20);
+  label(c, tr("拖动飞船躲避敌机 · 自动射击", "Drag to dodge / automatic fire"), 640, 662, MUTED, true, 20);
 }
 
 // --- Tetris: 10 columns, 18 visible rows ---------------------------------------
@@ -395,24 +403,24 @@ void drawBlocks(M5Canvas& c) {
     }
   }
   char s[64];
-  if (visible(60, 223, 350, 30)) label(c, "消除整行，留出空间", 62, 225, CYAN, false, 20);
+  if (visible(60, 223, 350, 30)) label(c, tr("消除整行，留出空间", "Clear rows to make space"), 62, 225, CYAN, false, 20);
   if (visible(60, 279, 300, 30)) {
-    snprintf(s, sizeof(s), "已消除 %lu 行", (unsigned long)lines); label(c, s, 62, 281);
+    snprintf(s, sizeof(s), tr("已消除 %lu 行", "Lines cleared %lu"), (unsigned long)lines); label(c, s, 62, 281);
   }
   if (visible(60, 322, 300, 30)) {
-    snprintf(s, sizeof(s), "等级 %lu", (unsigned long)(1 + lines / 5)); label(c, s, 62, 324, AMBER);
+    snprintf(s, sizeof(s), tr("等级 %lu", "Level %lu"), (unsigned long)(1 + lines / 5)); label(c, s, 62, 324, AMBER);
   }
-  if (visible(60, 405, 350, 30)) label(c, "轮廓是落点预览", 62, 407, MUTED, false, 20);
-  if (visible(60, 447, 350, 30)) label(c, "长按方向键可连续移动", 62, 449, MUTED, false, 20);
-  if (visible(826, 205, 150, 30)) label(c, "下一个", 828, 207, MUTED, false, 20);
+  if (visible(60, 405, 350, 30)) label(c, tr("轮廓是落点预览", "Outline previews the landing"), 62, 407, MUTED, false, 20);
+  if (visible(60, 447, 350, 30)) label(c, tr("长按方向键可连续移动", "Hold an arrow to keep moving"), 62, 449, MUTED, false, 20);
+  if (visible(826, 205, 150, 30)) label(c, tr("下一个", "Next"), 828, 207, MUTED, false, 20);
   if (visible(818, 242, 174, 164)) panel(c, 818, 242, 174, 164, 0x0B1522, palette().edge, 18);
   if (visible(833, 255, 134, 134)) {
     for (int y = 0; y < 4; ++y) for (int x = 0; x < 4; ++x)
       if (cell(nextPiece, 0, x, y)) block(c, 836 + x * 32, 258 + y * 32, 32, blockColors[nextPiece]);
   }
-  if (visible(826, 456, 350, 30)) label(c, "轻点旋转", 828, 458, CYAN, false, 20);
-  if (visible(826, 498, 350, 30)) label(c, "速降立即落到底部", 828, 500, MUTED, false, 20);
-  const char* names[] = {"左移", "旋转", "右移", "下落", "速降"};
+  if (visible(826, 456, 350, 30)) label(c, tr("轻点旋转", "Tap to rotate"), 828, 458, CYAN, false, 20);
+  if (visible(826, 498, 350, 30)) label(c, tr("速降立即落到底部", "Hard drop lands immediately"), 828, 500, MUTED, false, 20);
+  const char* names[] = {tr("左移", "Left"), tr("旋转", "Rotate"), tr("右移", "Right"), tr("下落", "Down"), tr("速降", "Hard drop")};
   for (int i = 0; i < 5; ++i)
     if (visible(300 + i * 140, 644, 124, 58)) button(c, names[i], 300 + i * 140, 644, 124, 58, heldControl == i);
 }
@@ -489,9 +497,9 @@ void drawDino(M5Canvas& c, uint32_t now) {
   c.fillRect(x + 8, y - 13, 8, 7 + gait, color(CYAN));
   c.fillRect(x - 9, y - 4 - gait, 15, 4, color(CYAN));
   c.fillRect(x + 8, y - 10 + gait, 15, 4, color(CYAN));
-  label(c, "轻点场地或右侧按钮跳跃", 65, 629, MUTED, false, 20);
-  label(c, "越过仙人掌，跑得越远分数越高", 65, 666, MUTED, false, 20);
-  button(c, "跳跃", 947, 613, 270, 80, false, GREEN);
+  label(c, tr("轻点场地或右侧按钮跳跃", "Tap the field or the button to jump"), 65, 629, MUTED, false, 20);
+  label(c, tr("越过仙人掌，跑得越远分数越高", "Jump over cacti and run for a higher score"), 65, 666, MUTED, false, 20);
+  button(c, tr("跳跃", "Jump"), 947, 613, 270, 80, false, GREEN);
 }
 
 void resetGame(Game next, uint32_t now) {
@@ -503,10 +511,10 @@ void resetGame(Game next, uint32_t now) {
   sceneChanged = true;
 }
 void drawPicker(M5Canvas& c) {
-  label(c, "休息一下，来一局", 640, 154, INK, true, 40);
-  label(c, "选择游戏 · 随时返回聊天", 640, 201, MUTED, true, 20);
-  const char* names[] = {"星际守卫", "俄罗斯方块", "小恐龙跑酷"};
-  const char* captions[] = {"拖动飞船 · 自动射击", "移动旋转 · 消除整行", "轻点跳跃 · 越跑越快"};
+  label(c, tr("休息一下，来一局", "Take a little break"), 640, 154, INK, true, 40);
+  label(c, tr("选择游戏 · 随时返回聊天", "Pick a game / return to chat anytime"), 640, 201, MUTED, true, 20);
+  const char* names[] = {tr("星际守卫", "Star Guard"), tr("俄罗斯方块", "Blocks"), tr("小恐龙跑酷", "Dino Run")};
+  const char* captions[] = {tr("拖动飞船 · 自动射击", "Drag to fly / auto fire"), tr("移动旋转 · 消除整行", "Move, rotate / clear rows"), tr("轻点跳跃 · 越跑越快", "Tap to jump / keep running")};
   uint32_t accents[] = {CYAN, AMBER, GREEN};
   for (int i = 0; i < 3; ++i) {
     int x = 40 + i * 414, cx = x + 186;
@@ -534,28 +542,29 @@ void drawPicker(M5Canvas& c) {
     }
     label(c, names[i], cx, 464, INK, true, 28);
     label(c, captions[i], cx, 508, MUTED, true, 20);
-    char s[64]; snprintf(s, sizeof(s), "本次最高 %lu", (unsigned long)best[i]);
+    char s[64]; snprintf(s, sizeof(s), tr("本次最高 %lu", "Session best %lu"), (unsigned long)best[i]);
     label(c, s, cx, 548, accents[i], true, 20);
   }
-  label(c, "随时暂停，返回聊天也会保留本局进度", 640, 653, MUTED, true, 20);
+  label(c, tr("随时暂停，返回聊天也会保留本局进度", "Pause anytime. Your game waits while you chat."), 640, 653, MUTED, true, 20);
 }
 void drawNavigation(M5Canvas& c) {
-  button(c, "游戏库", 28, 109, 138, 48);
-  const char* name = game == Game::Plane ? "星际守卫" : game == Game::Blocks ? "俄罗斯方块" : "小恐龙跑酷";
+  button(c, tr("游戏库", "Games"), 28, 109, 138, 48);
+  const char* name = game == Game::Plane ? tr("星际守卫", "Star Guard") : game == Game::Blocks ? tr("俄罗斯方块", "Blocks") : tr("小恐龙跑酷", "Dino Run");
   label(c, name, 198, 121);
   char score[112];
-  if (game == Game::Plane) snprintf(score, sizeof(score), "得分 %lu   生命 %u   最高 %lu", (unsigned long)scores[0], lives, (unsigned long)best[0]);
-  else snprintf(score, sizeof(score), "得分 %lu   最高 %lu", (unsigned long)scores[index()], (unsigned long)best[index()]);
-  label(c, score, 484, 124, AMBER, false, 20);
-  button(c, phase == Phase::Over ? "已结束" : phase == Phase::Paused ? "继续" : "暂停", 984, 109, 112, 48,
+  if (game == Game::Plane) snprintf(score, sizeof(score), tr("得分 %lu   生命 %u   最高 %lu", "Score %lu   Lives %u   Best %lu"), (unsigned long)scores[0], lives, (unsigned long)best[0]);
+  else snprintf(score, sizeof(score), tr("得分 %lu   最高 %lu", "Score %lu   Best %lu"), (unsigned long)scores[index()], (unsigned long)best[index()]);
+  label(c, score, 484, 124, AMBER, false,
+    UiText::bounds(UiFont::sans20(), score).w > 470 ? 16 : 20);
+  button(c, phase == Phase::Over ? tr("已结束", "Finished") : phase == Phase::Paused ? tr("继续", "Resume") : tr("暂停", "Pause"), 984, 109, 112, 48,
     false, phase == Phase::Over ? MUTED : CYAN);
-  button(c, "重开", 1110, 109, 142, 48);
+  button(c, tr("重开", "Restart"), 1110, 109, 142, 48);
 }
 void drawOverlay(M5Canvas& c) {
   raised(c, 350, 294, 580, 184, 24, false, phase == Phase::Over ? AMBER : CYAN);
-  label(c, phase == Phase::Over ? "游戏结束" : "已暂停", 640, 342, phase == Phase::Over ? AMBER : CYAN, true, 32);
-  label(c, phase == Phase::Over ? "点右上角「重开」，再来一局" : "点右上角「继续」回到游戏", 640, 399, INK, true);
-  label(c, "也可以随时返回游戏库或聊天", 640, 444, MUTED, true, 20);
+  label(c, phase == Phase::Over ? tr("游戏结束", "Game over") : tr("已暂停", "Paused"), 640, 342, phase == Phase::Over ? AMBER : CYAN, true, 32);
+  label(c, phase == Phase::Over ? tr("点右上角「重开」，再来一局", "Tap Restart at the top right to play again") : tr("点右上角「继续」回到游戏", "Tap Resume at the top right to continue"), 640, 399, INK, true);
+  label(c, tr("也可以随时返回游戏库或聊天", "Or return to the games library or chat"), 640, 444, MUTED, true, 20);
 }
 void drawScene(M5Canvas& c, uint32_t now) {
   if (game == Game::Picker) { drawPicker(c); return; }
@@ -570,6 +579,7 @@ void drawScene(M5Canvas& c, uint32_t now) {
 void init() {
   game = Game::Picker; phase = Phase::Running; started = false; sceneChanged = true;
   lastTick = previousPress = gameTicks = launchPress = 0; dirtyCount = 0;
+  renderedLanguageRevision = UiLocale::revision();
   portENTER_CRITICAL(&inputLock); input = Input{}; portEXIT_CRITICAL(&inputLock);
 }
 void setDarkTheme(bool dark) {
@@ -584,6 +594,9 @@ void touch(int16_t x, int16_t y, bool pressed) {
 }
 bool render(M5Canvas& c, uint32_t now, bool force) {
   memset(tiles, 0, sizeof(tiles)); dirtyCount = 0;
+  if (renderedLanguageRevision != UiLocale::revision()) {
+    renderedLanguageRevision = UiLocale::revision(); sceneChanged = true;
+  }
   Input p;
   portENTER_CRITICAL(&inputLock); p = input; portEXIT_CRITICAL(&inputLock);
   if (p.dark != darkTheme) { darkTheme = p.dark; sceneChanged = true; }

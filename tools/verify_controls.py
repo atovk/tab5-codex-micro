@@ -54,7 +54,7 @@ def verify(output: Path) -> dict:
             return {"m": "v.oai.hid", "p": {"k": key, "act": action}}
 
         before = status()
-        assert before["firmware"] == "tab5-micro-0.10.2", before["firmware"]
+        assert before["firmware"] == "tab5-micro-0.11.0", before["firmware"]
         assert before["usb_mounted"] and before["host_seen"], before
         command("MICRO", "MICRO")
         command("INPUT_TEST_BEGIN", "INPUT_TEST_READY")
@@ -207,5 +207,5 @@ def verify(output: Path) -> dict:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("output",type=Path,nargs="?",default=Path("artifacts/controls-qa-0.10.2.json"))
+    parser.add_argument("output",type=Path,nargs="?",default=Path("artifacts/controls-qa-0.11.0.json"))
     print(json.dumps(verify(parser.parse_args().output),ensure_ascii=False,indent=2))
