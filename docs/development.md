@@ -1,0 +1,167 @@
+# 开发说明
+
+本页说明项目结构、协议边界和验证方法，并保留主要版本的实现记录。安装和日常使用见 [README](../README.md)。所有测试截图、串口记录和构建产物默认写入本地忽略的 `artifacts/`；公开仓库不包含个人聊天元数据或设备备份。
+
+## 项目结构
+
+| 路径 | 作用 |
+| --- | --- |
+| `src/micro_ui.cpp` | 双主题控制台、设置页、标题滚动和局部重绘 |
+| `src/micro_controls.cpp` | 旋钮、摇杆与按键的触摸事件 |
+| `src/micro_link.cpp` | 原生 Micro HID、本地元数据和诊断接口 |
+| `src/micro_games.cpp` | 三款本地触摸游戏 |
+| `src/micro_sound.cpp` | 音效队列和 I2S 播放 |
+| `src/micro_orientation.cpp` | IMU 横屏方向和触摸坐标同步 |
+| `src/device_settings.cpp` | 音量、静音和亮度的延迟持久化 |
+| `src/title_renderer.cpp` | 字形遮罩缓存与标题滚动合成 |
+| `include/title_layout.h` | 不分配内存的 UTF-8 换行逻辑 |
+| `include/title_scroll.h` | 停留、移动、暂停和恢复的时钟逻辑 |
+| `tools/title_sync.py` | 显式 Agent 绑定、配置和聊天状态串口同步 |
+| `tools/chat_state_bridge.py` | 指定聊天的桌面实时状态订阅 |
+| `tools/desktop_sync.py`、`tools/chat_sync.py` | 严格配置解析与桥接元数据验证 |
+| `tests/` | Python 和纯 C++ 逻辑回归 |
+
+## 构建和 USB 适配
+
+工具链、首次安装步骤和字体烧录见 README。`platformio.ini` 使用独立 `.pio-core/`，`prepare_platform.py` 获取固定 SHA 的项目本地平台并校验补丁。`prepare_core.py` 仅用于复制已有匹配缓存，不是新安装的必要步骤。
+
+Tab5 的 USB-C 使用 ESP32-P4 full-speed PHY0（GPIO24/25）。`tools/usb_fs_patch.py` 编译项目本地 Arduino USB 文件和 TinyUSB 0.21.0 HID 类，使用 64 字节 HID OUT 缓冲，避免 SDK high-speed 缓冲配置影响 full-speed 主机请求。补丁校验 SDK 版本、源锚点和供应商文件校验和，不修改全局框架。
+
+CDC 在 USB 身份确定后显式启动，接收缓冲为 8192 字节。主循环每次最多解析 256 字节，避免较长元数据行挤占触摸处理。同步、截图和刷机共享串口锁；诊断工具只选择应用 VID/PID 和有效的 Tab5 应用序列号，不回退到任意 Espressif ROM 设备。
+
+`partitions.csv` 面向 16MB Flash，包含 5MB factory 应用分区。动态标题字体独立放在 `0x510000`。首次安装或修改分区时刷入 factory 镜像；普通应用更新可以保留字体。
+
+## 输入契约
+
+| 触摸 | 原生事件 |
+| --- | --- |
+| 外环顺／逆时针 | 每圈 24 步，`ENC_CW`／`ENC_CC`，`act:2` |
+| 旋钮中心 | `ENC`，按下 `act:1`、释放 `act:0` |
+| 摇杆拖动 | `v.oai.rad`，归一化角度和距离；释放后发送归中 |
+| Agent／Command 键 | 成对的按下／释放事件 |
+
+手势从首次接触捕获到释放，穿过别的键不会触发它们。旋钮穿过中心后重新锚定角度，避免跳动；没有松手后的惯性输入。原生旋钮模式、长按、麦克风和自定义动作由桌面应用处理，固件不将它们替换为通用键盘快捷键。
+
+`INPUT_TEST` 使用同一触摸路径和事件序列化器，但将产生的事件送回 CDC，抑制电脑端 HID 操作。60 秒无测试输入自动退出；结束后要求现有手指先抬起再恢复电脑控制。测试捕获不等于桌面应用执行验证。
+
+## 元数据边界
+
+原生 Micro 的灯光消息保留六个 Agent 槽位以及 `keys`、`ambient` 区域的颜色、亮度、效果、速度和 magic 字段。状态文字由标准配色推断，自定义配色可能改变含义。
+
+标题 companion 只解析明确的本地 Custom assignments，再按 ID 读取所需标题；不从最近访问时间猜测槽位。收到的标题最多 191 个 UTF-8 字节，截断只发生在完整字符边界。`TITLES` 和 `HOST_CONFIG` 使用独立应答，同一批次共享 uint32 序号；任一应答失败不会阻止另一种元数据尝试发送，失败批次可重试。
+
+普通 watch 每秒检查一次数据变化，约两秒发送心跳。每种消息有独立 1.5 秒应答预算；读超时时保留部分应答行。设备在 7.5 秒没有有效更新或 USB 卸载时将元数据标记过期。RGB 保留状态和元数据新鲜度是不同概念。
+
+### 指定聊天的真实设置
+
+`chat_state_bridge.py` 连接已有桌面 Unix 协调 socket，注册本地数据客户端，订阅明确聊天的连续 revision。它不启动 app server、不恢复聊天、不发送消息，也不发现桌面当前选中的聊天。
+
+接受的下一轮设置用于确定 Fast／Standard、Plan／Default 和权限预设。缺失值保持 Unknown；明确 `serviceTier:null` 或 `default` 表示 Standard。Full access 需要匹配完整权限预设，不能仅凭 `approvalPolicy:never` 推断。自定义配置保持 Custom，不向缓存保留工作区路径或自定义配置名。
+
+桥接只保留所需的设置投影，不写入对话正文、工具输出或原始 IPC 帧。缓存权限为 0600，原子更新；断开连接、owner 丢失或 revision 缺口会使状态无效。companion 拒绝超过六秒的状态缓存。桌面 IPC 为内部版本化接口，应用升级不兼容时应明确显示未知。
+
+原生 HID 命令目标与桥接显示目标相互独立。屏幕显示“指定聊天”，不能将其解释为自动跟随桌面选中聊天。USB “已发送”也只是设备传输结果，不是应用执行应答。
+
+## 字体与两行滚动
+
+固定标签和动态标题均来自固定版本的 Noto Sans SC Medium。静态字体包含原生 16／20／24／26／28／32／40px 反锯齿子集；动态标题单独使用 24px BMP 字体，覆盖 30,445 字形。不支持的字符逐个替换，不因一个缺字将整行退回旧字体。
+
+标题资产格式 `T5VLW4` 保留 VLW 度量表，位图存储为 4-bit alpha。内存映射读取器将其按需展开为 M5GFX 可读取的数据，不逐字形分配堆内存。加载前验证头、尺寸、长度和 CRC。生成器输出固定上游 SHA、资产 SHA、字形数、尺寸和 Pillow 版本清单。
+
+```sh
+.venv/bin/python tools/build_ui_font.py --check
+.venv/bin/python tools/build_title_font.py
+.venv/bin/python tools/build_title_font.py --check
+```
+
+每个标题窗高 50px，使用两行 25px 行距。英文优先保持完整单词，中文允许按字符边界换行，并尽量避免标点出现在不合适的行首／行尾。短标题居中，最多两行时保持静止，不增加省略号。
+
+超过两行后，先停留 2.2 秒，再用一秒上移一行；末尾附加前两行使循环连贯。任何触摸都会暂停时钟，松手后保留一秒阅读停顿再继续。打开设置或游戏时暂停，返回后不根据消逝的墙钟时间跳过内容。
+
+内容、字体或宽度改变时才重新光栅化文字并缓存 alpha 条带。滚动时恢复干净背景再合成，不重新绘字或分配内存。主题／按压背景变化时重新捕获背景，保持滚动位置。标题与霓虹边框共用空闲更新预算，每帧最多刷新一个空闲区域，输入相关重绘优先。
+
+`TITLE_SCROLL_TEST` 仅在 `INPUT_TEST` 中有效，用于可重复的虚拟绝对时钟验证；退出捕获自动清除。正常生产滚动使用真实时钟。`FX FREEZE` 将普通标题固定在头两行，便于像素比较。
+
+## 材质、霓虹与局部更新
+
+大面积背景、面板和按键面使用确定的 RGB565 纯色，阴影集中在边缘，避免全屏颗粒纹理。圆角、旋钮边缘、刻度和图标采用亚像素覆盖；少量渐变使用固定蓝噪声阈值，完整与局部重绘使用相同坐标保证一致。
+
+活动霓虹位于键帽边缘，文字区域不参与动画。边框更新和标题更新不会重复绘制整张卡片；按压及主题切换会使相关背景缓存失效并重新捕获。
+
+触摸区域在视觉键帽外适当扩展，键间空隙保留独立手势边界。这是基于屏幕尺寸和目标大小的设计审查，尚无正式用户研究或可用性认证。
+
+## 声音与方向
+
+音频走板载 Codec 的 I2S/PCM 路径。短音按旋钮、按键和摇杆事件节流，设置页调整音量时提供预览；音量、静音和亮度在释放触摸后延迟保存，避免拖动过程中频繁写入 Flash。
+
+P4 SDK 的默认 USB 调试 PHY 管脚处理与音频 GPIO26/27 有冲突，因此必须保留 `micro_sound.cpp` 中释放调试 PHY 的处理，并在 USB 启动前初始化音频。不要在运行中任意重建 Speaker 或 USB 驱动。
+
+方向策略使用加速度的重力投影和陀螺仪稳定性，在两个横屏方向间切换。螺丝孔朝下对应 rotation 3，反向对应 rotation 1；触摸、截图或诊断捕获期间不改变坐标系。平放、竖向、剧烈移动和传感器异常时保持当前方向。
+
+## 测试与诊断
+
+主机逻辑测试无需连接设备，纯 C++ 测试需要可用编译器：
+
+```sh
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python tools/build_ui_font.py --check
+.venv/bin/python tools/build_ui_icons.py --check
+.venv/bin/python tools/build_material_noise.py --check
+.venv/bin/python tools/build_ui_sounds.py --check
+```
+
+连接已刷入固件的 Tab5 后按需运行：
+
+```sh
+.venv/bin/python tools/verify_controls.py
+.venv/bin/python tools/verify_ui_pixels.py
+.venv/bin/python tools/verify_title_scroll.py
+.venv/bin/python tools/verify_audio_performance.py
+.venv/bin/python tools/verify_neon.py
+.venv/bin/python tools/verify_orientation.py
+```
+
+这些触摸回归工具使用诊断捕获，阻止合成触摸事件触发电脑操作。清理代码会退出捕获、清除预览并恢复设置；方向验证可能需要手动摆放设备。
+
+`verify_host_feedback.py` 和 `verify_title_font.py` 的状态／标题是隔离的合成演示。`verify_chat_bridge.py` 会实际调整明确测试聊天的下一轮模式并恢复原值；运行前阅读 `--help`，使用专门的测试聊天。它验证状态回传，不能单独证明原生 HID 操作已经执行。
+
+常用 CDC 命令：
+
+| 命令 | 作用 |
+| --- | --- |
+| `STATUS` | 固件、输入、字体、元数据和绘制统计；可能含聊天标题／ID |
+| `SCREEN` | 将当前帧缓冲复制到 PSRAM 并分块导出 RGB565 |
+| `THEME LIGHT`／`THEME DARK` | 本地主题切换 |
+| `PLAY`／`MICRO` | 游戏库／控制台切换 |
+| `PERF_RESET` | 清除性能统计 |
+| `PERF_FULL`／`PERF_DIRTY` | 完整呈现基线／普通局部呈现 |
+| `BOOTLOADER`／`RESTART` | 进入 ROM 下载模式／重启 |
+
+截图传输期间 companion 暂时无法取得串口锁，所以传输后的元数据可能超过 TTL；这不改变 SCREEN 时已经复制的画面。需要验证实时状态时，应同时保存截图之前的新鲜 STATUS，传输后释放锁并等待 companion 更新。
+
+### 0.10.2 验证摘要
+
+- 公开整理后 164 项主机测试通过，覆盖输入、状态解析、权限预设、字体资产、UTF-8 换行和滚动时钟。
+- 正常墙钟驱动的长标题滚动通过；虚拟时钟验证停留、移动、循环、触摸暂停、恢复停顿和标题替换边界。
+- 长标题滚动差异局限在标题窗内；长标题替换为短标题以及按键／摇杆操作后，局部恢复与完整重建的像素比较无残影。
+- 七个长标题窗完成缓存与场景稳定后，在无 STATUS 轮询的四秒样本中记录 66 次标题更新，最大绘制 2.433ms，最大输入采样间隔 5.004ms。
+- 音效同时工作时，旋钮样本最大绘制／输入间隔为 14.820／19.002ms，摇杆为 21.628／25.002ms。
+
+这些是短时设备端样本，不是普遍性能上限，也不是电脑端操作延迟。全屏切换、初次字体准备和诊断传输应与稳定的交互样本分别测量；持续轮询 STATUS 本身会影响 USB 和主循环时序。
+
+## 主要版本记录
+
+| 版本 | 变化 |
+| --- | --- |
+| 0.10.2 | 两行标题、超长自动滚动、触摸暂停、字形遮罩缓存和滚动回归 |
+| 0.10.1 | 完整 BMP 动态标题字库、统一字体、逐字符缺字处理和可见字形对齐 |
+| 0.10.0 | 指定聊天的真实 Fast／Plan／权限状态桥接、revision 连续性与过期处理 |
+| 0.9.0 | 原生 RGB 区域回显、配置驱动标签、独立 USB 传输结果与状态过期提示 |
+| 0.8.x | 设置持久化、交互声音、音频／USB 共存和 IMU 横屏方向修正 |
+| 0.7.0 | 活动 Agent 的局部霓虹边框动画 |
+| 0.6.0 | 移除大面积网格纹理，扩大触摸区域，改进阴影和局部恢复 |
+| 0.5.0 | 统一反锯齿字体、图标、圆角与可见字形居中 |
+| 0.4.0 | 金属／石墨双主题、主题持久化和游戏库外观 |
+| 0.3.0 | 连续触摸旋钮、摇杆行程、原生按下／释放和手势捕获 |
+| 0.2.0 | 显式绑定的聊天标题 companion 与三款本地游戏 |
+| 0.1.x | USB HID 协议接入、设备发现和局部重绘基础 |

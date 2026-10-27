@@ -1,0 +1,7 @@
+# Python 3.11–3.14. Install into the repository's .venv, not the global Python.
+# pioarduino supplies the PlatformIO module; do not install a second platformio.
+pioarduino==6.2.0.post1
+esptool==5.4.0
+pyserial==3.5
+hidapi==0.15.0
+Pillow==13.0.0
