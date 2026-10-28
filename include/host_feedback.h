@@ -19,6 +19,7 @@ struct Config {
   Encoder encoder=Encoder::Unknown;
   Voice voice=Voice::Unknown;
   Action actions[7]={};  // ACT06 through ACT12; no custom text is transported.
+  bool joystickUpPlan=false;  // Validated mapping fact, not chat state or target identity.
 };
 enum class ChatSource : uint8_t { Unavailable, DesktopIpc };
 enum class Speed : uint8_t { Unknown, Default, Standard, Fast, UltraFast };

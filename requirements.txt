@@ -4,4 +4,5 @@ pioarduino==6.2.0.post1
 esptool==5.4.0
 pyserial==3.5
 hidapi==0.15.0
+bleak==3.0.1
 Pillow==13.0.0

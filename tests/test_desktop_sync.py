@@ -98,6 +98,7 @@ class DesktopSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot.encoder, "unknown")
         self.assertEqual(snapshot.voice, "unknown")
         self.assertEqual(tuple(snapshot.actions), UNKNOWN_ACTIONS)
+        self.assertEqual(snapshot.joystick_up, "unknown")
 
     def assert_unavailable(self, snapshot):
         self.assertEqual(snapshot.source, "unavailable")
@@ -352,6 +353,64 @@ class DesktopSnapshotTests(unittest.TestCase):
                 self.state[LAYOUT_KEY] = layout
                 self.assert_unknown_layout(self.snapshot())
 
+    def test_joystick_up_uses_the_verified_v1_default_when_analog_stick_is_absent(self):
+        self.assertEqual(self.snapshot().joystick_up, "plan")
+        self.state[LAYOUT_KEY] = minimal_layout()
+        self.assertEqual(self.snapshot().joystick_up, "plan")
+        self.write_config({"desktop": {LAYOUT_KEY: minimal_layout()}})
+        self.assertEqual(self.snapshot().joystick_up, "plan")
+
+    def test_only_exact_plan_up_mapping_exports_plan_without_custom_text(self):
+        for up, expected in (
+            ({"type": "command", "commandId": "composer.togglePlanMode"}, "plan"),
+            (None, "unknown"),
+            ({"type": "command", "commandId": "composer.toggleFastMode"}, "unknown"),
+            ({"type": "command", "commandId": PRIVATE}, "unknown"),
+            ({"type": "skill", "skillName": PRIVATE, "skillPath": "/synthetic/" + PRIVATE}, "unknown"),
+        ):
+            with self.subTest(up=up):
+                layout = minimal_layout()
+                layout["analogStick"] = {"up": up, "right": None, "down": None, "left": None}
+                self.state[LAYOUT_KEY] = layout
+                snapshot = self.snapshot()
+                self.assertEqual(snapshot.joystick_up, expected)
+                command = desktop_sync.encode_command(snapshot, 7)
+                self.assertEqual(json.loads(command[len(b"HOST_CONFIG "):])["joystick_up"], expected)
+                self.assertNotIn(PRIVATE.encode(), command)
+                self.assertNotIn(PRIVATE, json.dumps(desktop_sync.summary(snapshot)))
+
+    def test_plan_up_is_unknown_if_any_part_of_the_layout_is_invalid(self):
+        valid_stick = {"up": {"type": "command", "commandId": "composer.togglePlanMode"},
+                       "right": None, "down": None, "left": None}
+        for invalid_part in ("up", "right", "encoder", "slots", "version"):
+            with self.subTest(invalid_part=invalid_part):
+                layout = minimal_layout()
+                layout["analogStick"] = dict(valid_stick)
+                if invalid_part in ("up", "right"):
+                    layout["analogStick"][invalid_part] = {"type": "command", "commandId": []}
+                elif invalid_part == "encoder":
+                    layout["encoder"] = {}
+                elif invalid_part == "slots":
+                    del layout["slots"]["ACT06"]
+                else:
+                    layout["version"] = 99
+                self.state[LAYOUT_KEY] = layout
+                self.assert_unknown_layout(self.snapshot())
+
+    def test_joystick_up_respects_the_authoritative_toml_layout(self):
+        global_layout = minimal_layout()
+        self.state[LAYOUT_KEY] = global_layout
+        preferred = minimal_layout()
+        preferred["analogStick"] = {
+            direction: {"type": "command", "commandId": "navigateBack"}
+            for direction in ("up", "right", "down", "left")
+        }
+        self.write_config({"desktop": {LAYOUT_KEY: preferred}})
+        self.assertEqual(self.snapshot().joystick_up, "unknown")
+        self.state[LAYOUT_KEY] = preferred
+        self.write_config({"desktop": {LAYOUT_KEY: global_layout}})
+        self.assertEqual(self.snapshot().joystick_up, "plan")
+
     def test_private_custom_actions_profiles_urls_and_ids_never_leave_as_text(self):
         layout = minimal_layout()
         layout["slots"]["ACT06"]["action"] = {
@@ -397,6 +456,7 @@ class DesktopWireTests(unittest.TestCase):
         self.assertEqual(tuple(snapshot.actions), UNKNOWN_ACTIONS)
         payload = json.loads(desktop_sync.encode_command(snapshot, 0)[len(b"HOST_CONFIG "):])
         self.assertEqual(payload["actions"], ["unknown"] * 7)
+        self.assertEqual(payload["joystick_up"], "unknown")
 
     def test_wire_is_versioned_bounded_ascii_and_omits_reason(self):
         snapshot = self.snapshot(reason=PRIVATE)
@@ -409,7 +469,7 @@ class DesktopWireTests(unittest.TestCase):
             self.assertLessEqual(len(command), 6144)
             command.decode("ascii")
             payload = json.loads(command[len(b"HOST_CONFIG "):])
-            self.assertEqual(set(payload), {"v", "seq", "source", "tier", "encoder", "voice", "actions"})
+            self.assertEqual(set(payload), {"v", "seq", "source", "tier", "encoder", "voice", "actions", "joystick_up"})
             self.assertEqual((payload["v"], payload["seq"]), (1, sequence))
             self.assertEqual(payload["actions"], list(DEFAULT_ACTIONS))
             self.assertNotIn(PRIVATE.encode(), command)
@@ -424,6 +484,7 @@ class DesktopWireTests(unittest.TestCase):
             ("tier", ("unknown", "standard", "fast", "ultrafast")),
             ("encoder", ("unknown", "composer-navigation", "reasoning", "conversation-scroll", "custom")),
             ("voice", ("unknown", "push-to-talk", "realtime")),
+            ("joystick_up", ("unknown", "plan")),
         ):
             for value in values:
                 with self.subTest(field=field, value=value):
@@ -436,7 +497,7 @@ class DesktopWireTests(unittest.TestCase):
                 self.assertEqual(payload["actions"], [action] * 7)
 
     def test_wire_rejects_unknown_enum_types_and_raw_text_injection(self):
-        for field in ("source", "tier", "encoder", "voice"):
+        for field in ("source", "tier", "encoder", "voice", "joystick_up"):
             for value in (PRIVATE, "fast\nHOST_CONFIG {}", None, True, 1, [], {}):
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                     desktop_sync.encode_command(self.snapshot(**{field: value}), 1)
@@ -450,7 +511,8 @@ class DesktopWireTests(unittest.TestCase):
         base = {"source": "unavailable", "tier": "unknown", "encoder": "unknown",
                 "voice": "unknown", "actions": UNKNOWN_ACTIONS}
         for field, value in (("tier", "fast"), ("encoder", "reasoning"),
-                             ("voice", "realtime"), ("actions", DEFAULT_ACTIONS)):
+                             ("voice", "realtime"), ("actions", DEFAULT_ACTIONS),
+                             ("joystick_up", "plan")):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 desktop_sync.encode_command(desktop_sync.DesktopSnapshot(**{**base, field: value}), 1)
 
@@ -742,7 +804,7 @@ class DesktopMainTests(unittest.TestCase):
 
     def test_once_opens_one_connection_and_sends_both_versioned_packets(self):
         connection = FakeSerial([b"TITLES_OK 123\n", b"HOST_CONFIG_OK 123\n"])
-        result, summary, opened = self.invoke("--once", connection=connection)
+        result, summary, opened = self.invoke("--once", "--transport", "usb", connection=connection)
         self.assertEqual(result, 0)
         opened.assert_called_once_with(None, 0.5)
         self.assertTrue(connection.closed)

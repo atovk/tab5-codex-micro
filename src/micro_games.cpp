@@ -659,7 +659,7 @@ bool render(M5Canvas& c, uint32_t now, bool force) {
     const auto& r = dirty[i];
     drawingClip = r;
     c.setClipRect(r.x, r.y, r.w, r.h);
-    c.fillRect(r.x, r.y, r.w, r.h, color(palette().background));
+    MaterialGradient::solid565(c, r.x, r.y, r.w, r.h, color(palette().background));
     drawScene(c, now);
   }
   c.clearClipRect();

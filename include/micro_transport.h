@@ -5,8 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
-// Scheduling only: no Arduino, USB, or desktop-execution assumptions. A
-// successful submission means the USB stack accepted a report, not that the
+// Scheduling only: no Arduino, physical transport, or execution assumptions. A
+// successful submission means the transport accepted a report, not that the
 // desktop application consumed or executed it.
 namespace MicroTransport {
 
@@ -79,6 +79,11 @@ public:
   uint16_t heldKeys() const { return held_; }
   bool stickActive() const { return stick_; }
   bool recoveryPending() const { return recoveryKeys_ || recoveryStick_; }
+  bool nativeIdle() const {
+    if (held_ || stick_ || recoveryPending() || cleanup_.length) return false;
+    for (unsigned i=0;i<size_;++i) if (items_[i].tag.kind!=Kind::Response) return false;
+    return true;
+  }
   // Cancellation is asynchronous to enqueue(). Report affected native keys
   // once, before a cleanup submission can update its gesture receipt.
   uint16_t takeDroppedKeys() { const auto keys=droppedKeys_; droppedKeys_=0; return keys; }
@@ -118,7 +123,7 @@ public:
     return true;
   }
 
-  // Called once per poll; a failed or busy endpoint leaves the exact next
+  // Called once per endpoint poll; a failed or busy endpoint leaves the exact next
   // fragment intact. An active multi-report reply is never interleaved.
   const Message* next(uint32_t now) {
     servingCleanup_=false;
@@ -158,7 +163,7 @@ public:
     ++stats_.submitted;
     return true;
   }
-  // Cancel queued actions in this USB session, then release only controls that
+  // Cancel queued actions in this link session, then release only controls that
   // were actually submitted. Cleanup bypasses a full queue and precedes new
   // actions; no new presses are accepted until cleanup has been submitted.
   void cancelInputs() {
@@ -178,7 +183,7 @@ public:
     if (enabled && !suspended_) cancelInputs();
     suspended_=enabled;
   }
-  // A new USB session must not inherit stale presses, turns, releases, or
+  // A new link session must not inherit stale presses, turns, releases, or
   // partially framed replies. In particular, a release can itself trigger a
   // desktop action, so recovery is never replayed across a disconnect.
   void disconnect() {

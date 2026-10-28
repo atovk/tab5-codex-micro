@@ -4,7 +4,7 @@
 
 This page describes the project structure, protocol boundaries, validation tools, and main implementation milestones. See the [README](../README.en.md) for installation and everyday use. Test screenshots, serial records, and build outputs go into the locally ignored `artifacts/` directory. The public repository excludes personal chat metadata and device backups.
 
-These implementation notes describe 0.11.1. Precompiled firmware, the font, and bilingual flashing guides are available in the [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1). Validation results apply only to their labeled version and specific test cases.
+Current source includes the **unreleased 0.12.0 USB/BLE implementation; hardware validation is ongoing**. Precompiled USB firmware, the font, and bilingual flashing guides remain in the [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1). Historical results apply only to their labeled version and test cases, and do not establish Bluetooth compatibility. Usage steps are in the [Bluetooth guide](BLUETOOTH.en.md).
 
 ## Project structure
 
@@ -13,6 +13,9 @@ These implementation notes describe 0.11.1. Precompiled firmware, the font, and 
 | `src/micro_ui.cpp` | Console, settings, themes, title scrolling, and partial redraws |
 | `src/micro_controls.cpp` | Touch events for the dial, joystick, and buttons |
 | `src/micro_link.cpp` | Native Micro HID, local metadata, and diagnostics |
+| `src/micro_ble.cpp`, `include/ble_pairing_policy.h` | C6 BLE HID, encrypted GATT, PIN pairing window, and bond policy |
+| `src/ble_ecc_compat.c`, `tools/ble_ecc_patch.py`, `tools/ble_security_patch.py` | Pinned-SDK ECC compatibility and local NimBLE authentication/HID Report fixes |
+| `include/micro_connection.h` | USB/BLE session isolation, input selection, and release handling on switches |
 | `src/micro_games.cpp` | Three local touch games |
 | `src/micro_sound.cpp` | Sound queue and I2S playback |
 | `src/micro_orientation.cpp` | IMU landscape orientation and synchronized touch coordinates |
@@ -21,14 +24,16 @@ These implementation notes describe 0.11.1. Precompiled firmware, the font, and 
 | `src/title_renderer.cpp` | Glyph-mask caching and title-scroll compositing |
 | `include/title_layout.h` | Allocation-free UTF-8 wrapping |
 | `include/title_scroll.h` | Dwell, motion, pause, and resume clocks |
-| `include/micro_transport.h` | Bounded HID queue and release/neutral recovery within one USB session |
+| `include/micro_transport.h` | Bounded HID queue and release/neutral recovery within one transport session |
 | `src/render_service.cpp`, `include/render_service.h` | Checkpoints that service touch and USB cooperatively during drawing |
 | `include/game_lifecycle.h` | Game visibility, pause on exit, and explicit resume |
-| `tools/title_sync.py` | Serial synchronization of explicit Agent assignments, configuration, and chat state |
+| `tools/title_sync.py` | USB/BLE synchronization of explicit Agent assignments, configuration, and chat state |
+| `tools/tab5_ble.py`, `tools/tab5_metadata.py` | Persistent BLE metadata, P4 identity checks, USB priority, and cross-process connection ownership |
 | `tools/chat_state_bridge.py` | Live desktop-state subscription for an explicit chat |
 | `tools/desktop_sync.py`, `tools/chat_sync.py` | Strict configuration parsing and bridge-metadata validation |
 | `tools/verify_transition_performance.py` | Isolated checks for complete page transitions and new title-cache construction |
 | `tools/verify_screenshot_stream.py` | Binary screenshot integrity and cleanup across the capture watchdog |
+| `tools/verify_ble_native.py` | Explicitly enabled native BLE checks separating queueing, transport, and desktop state changes |
 | `tests/` | Python and Arduino-free C++ regression tests |
 
 ## Precompiled release bundle
@@ -48,6 +53,41 @@ Tab5's USB-C connector uses ESP32-P4 full-speed PHY0 on GPIO24/25. `tools/usb_fs
 CDC starts explicitly after USB identity is configured, with an 8192-byte receive buffer. Each main-loop pass parses at most 256 bytes, preventing long metadata lines from monopolizing touch handling. Synchronization, screenshots, and flashing share a serial lock. Diagnostic tools select the application VID/PID and a valid Tab5 application serial number; they do not fall back to an arbitrary Espressif ROM device.
 
 `partitions.csv` targets 16MB flash and includes a 5MB factory application partition. The dynamic title font occupies a separate region at `0x510000`. Flash the factory image for a first installation or partition change. Ordinary application updates can retain the font.
+
+## 0.12.0 Bluetooth implementation and validation boundaries
+
+P4 runs the UI and native protocol; the onboard C6 supplies the BLE controller through ESP-Hosted/SDIO. Wireless initialization runs in a separate worker and leaves USB available on failure. C6 availability, visible advertising, and negotiated MTU do not establish pairing: PIN entry, bonding, encryption, and authentication must complete. First unlock macOS, pair in system Bluetooth settings, and then allow the companion to continue.
+
+BLE exposes HID service `0x1812`, vendor usage page `0xFF00`, native report ID 6, and 63-byte report payloads. Device Information PnP ID corresponds to `0x303A:0x8360`. Matching VID/PID is only one identification condition and cannot establish desktop execution. USB and BLE keep separate receive assembly, transmit queues, and session identifiers to prevent splicing or replay across connections.
+
+Native input goes to one selected connection, with mounted USB taking priority. Switching gives the previous connection bounded time to release held controls and center the joystick, disconnecting an old Bluetooth session if cleanup cannot complete. A partial gesture does not continue on the new connection. Normal USB insertion preserves BLE connection and bonding. **USB/BLE submitted** means transport acceptance, not desktop execution.
+
+Pairing uses a displayed random six-digit PIN, encryption, MITM authentication, and bonding. New identities can complete pairing only within the user-opened 120-second window; bonded identities can reconnect automatically. Authentication completion rechecks the window and session so an expired handshake cannot establish a new bond. Replacing an existing bond also requires a pairing window. Connections settings provide Bluetooth on/off, Start pairing, and confirmed Forget pairing.
+
+The pinned-SDK ECC compatibility fix routes only `uECC_shared_secret` through the SDK's mbedTLS ECDH interface, retaining TinyCrypt key generation and Secure Connections. SDK identity and the `libbt.a` SHA-256 are checked before building; changes stop the build. P4 startup testing uses the RFC 5903 P-256 known answer. NimBLE connection handling preserves `ENC_CHANGE` and CCCD state received before `CONNECT`. The local `BLEService` patch avoids dropping HID Reports by UUID deduplication, retaining five Report characteristics and read-only `0x2908` descriptors. Standard Service Changed indications ask bonded hosts to refresh GATT.
+
+### Separate metadata GATT service
+
+These UUIDs share the suffix `-7d4b-4b58-9e53-5e4ad07e7a50`:
+
+| UUID prefix | Purpose |
+| --- | --- |
+| `8f4d1000` | Metadata service |
+| `8f4d1001` | RX, writes with response; accepts line fragments after authenticated encryption |
+| `8f4d1002` | TX, notifications after authenticated encryption; replies may span MTU-sized fragments |
+| `8f4d1003` | Identity, read after authenticated encryption |
+
+Identity is `{"v":1,"serial":"TAB5-0123456789AB","maxLine":6144,"firmware":"tab5-micro-0.12.0"}`. The example serial must be replaced by the actual **P4 USB chip identity**. `firmware` is diagnostic and is not an exclusive version gate. Six P4 MAC bytes in advertisement manufacturer data under `0x303A` only narrow candidates; Identity protocol fields and the public serial are still checked after connection.
+
+The real project firmware requires encrypted, MITM-authenticated links for Identity, RX, and TX, with system PIN pairing for the first bond. Public serial matching on the host provides no application-level cryptographic device authentication. It cannot prevent an active impersonator from copying UUIDs/advertised serials and answering GATT without encryption to obtain metadata; this threat is currently unaddressed. Hardware encryption and pairing results apply to this firmware, not to companion clone resistance. See the [device identity boundary](BLUETOOTH.en.md#device-identity-boundary).
+
+RX accepts only `TITLES <json>\n` and `HOST_CONFIG <json>\n`, without input, screenshot, flashing, or general diagnostic commands. The desktop fragments writes by ATT MTU and firmware assembles newline-delimited messages. Successful replies are `TITLES_OK <seq>` and `HOST_CONFIG_OK <seq>`. A single `0x18` byte silently aborts an incomplete line, preventing a later newline from applying old state after a write timeout. Commands and replies belong to one BLE session and are not migrated after disconnection.
+
+Only `title_sync.py` connects to hardware; `chat_state_bridge.py` remains cache-only. A separate cross-process BLE owner lock protects the persistent GATT connection so another process cannot take over or close the connection shared with native HID. Auto prefers USB with the same serial and skips a heartbeat when its lock is busy. Normal USB insertion does not disconnect GATT. Sources are reread after connection and before each packet, without retaining chat snapshots for replay.
+
+macOS uses Bleak 3.0.1 and CoreBluetooth. Discovery merges scanning with the public `retrieveConnectedPeripheralsWithServices` API so a peripheral already connected through system HID remains discoverable after it stops advertising. The BLEDevice `(peripheral, manager)` adapter depends on the pinned backend contract; review it when upgrading Bleak. Unknown identities require a unique candidate; names, RSSI, and C6 addresses are not used to guess the target. Link establishment has a 15-second budget. The encrypted Identity read separately allows 60 seconds without holding the USB serial lock. This does not extend SMP's approximately 30-second transaction timeout. macOS may show the PIN prompt in a standalone BluetoothUIServer dialog; unlock the computer and enter the code promptly.
+
+Synthetic coverage includes identity checks, MTU fragmentation, notification assembly, interrupted writes, reconnect without replay, USB priority, owner locking, cache refresh, and PIN-window policy. Synthetic tests do not replace hardware evidence. Confirmed pairing, Fast/Plan desktop execution, metadata, and automatic fallback, along with remaining acceptance checks, are separated in the 0.12.0 results below.
 
 ## Input contract
 
@@ -74,9 +114,11 @@ Native Micro lighting messages retain color, brightness, effect, speed, and magi
 
 The title companion resolves explicit local Custom assignments and reads only their required titles by ID. It does not infer slot order from recent-access timestamps. Received titles have a 191-byte UTF-8 limit; truncation occurs only at complete character boundaries. `TITLES` and `HOST_CONFIG` have independent acknowledgements and share one uint32 sequence number per batch. A failed acknowledgement for either packet does not prevent the other packet from being attempted, and failed batches can be retried.
 
-Normal watch mode checks for changes once per second and sends a heartbeat approximately every two seconds. Each message has its own 1.5-second acknowledgement budget, and partial acknowledgement lines survive read timeouts. The device marks metadata stale after 7.5 seconds without a valid update or when USB unmounts.
+The optional `HOST_CONFIG` field `joystick_up` accepts only `unknown` or `plan`. The companion sends `plan` only when Up maps to `composer.togglePlanMode` in a fully valid desktop v1 layout; an omitted `analogStick` uses the verified desktop default. Custom or invalid mappings, unavailable configuration sources, and older packets without the field resolve to `unknown`. This reports a saved mapping, not the live action target or proof of execution, and exposes no custom command text.
 
-Connection evidence is kept separate: `usb_mounted` describes the current USB mount; `native_session_seen` means native host traffic was observed in this USB session, not that the host remains live; titles, configuration, and chat settings each have freshness state. The header labels USB connection and **Last** lighting explicitly. Retained RGB values cannot prove current desktop state. USB unmount invalidates the native session and metadata.
+Normal watch mode checks for changes once per second and sends a heartbeat approximately every two seconds. Each message has its own 1.5-second acknowledgement budget, and partial acknowledgement lines survive read timeouts. Metadata becomes stale after 7.5 seconds without a valid update, when the active connection is lost, or when it changes.
+
+Connection evidence is kept separate: `usb_mounted` describes the current USB mount; `native_session_seen` means native host traffic was observed in the currently selected transport session, not that the host remains live. Titles, configuration, and chat settings each have freshness state. The header distinguishes USB/BLE connection and **Last** lighting. Retained RGB values cannot prove current desktop state. A lost or changed connection invalidates the corresponding session and metadata.
 
 ### Real settings for an explicit chat
 
@@ -157,8 +199,8 @@ With a Tab5 running this firmware, run the relevant device checks as needed:
 .venv/bin/python tools/verify_audio_performance.py
 .venv/bin/python tools/verify_neon.py
 .venv/bin/python tools/verify_orientation.py
-.venv/bin/python tools/verify_transition_performance.py --firmware 0.11.1
-.venv/bin/python tools/verify_screenshot_stream.py --firmware 0.11.1
+.venv/bin/python tools/verify_transition_performance.py --firmware 0.12.0
+.venv/bin/python tools/verify_screenshot_stream.py --firmware 0.12.0
 ```
 
 These touch-regression tools use diagnostic capture to prevent synthetic touches from triggering computer actions. Cleanup exits capture, clears previews, and restores preferences. Orientation validation may require manually repositioning the device.
@@ -170,6 +212,12 @@ The tool owns an isolated `INPUT_TEST` capture and uses synthetic previews. It d
 `verify_screenshot_stream.py` checks binary screenshot integrity across the 60-second capture watchdog. It obtains a reference frame from a frozen synthetic preview with an isolated held key, then uses the capture-only `SCREEN_TEST_SLOW` command to pace device transmission at **28,000 B/s**. The host reads continuously rather than relying on host serial buffering to apply device backpressure. The tool checks the header, exact pixel byte count, trailer, equality with the reference frame, and the deferred release event and cleanup `STATUS` after the frame.
 
 The state and titles used by `verify_host_feedback.py` and `verify_title_font.py` are isolated synthetic demonstrations. `verify_chat_bridge.py` actually changes an explicit test chat's next-turn settings, then restores their original values. Read its `--help` and use a dedicated test chat. It verifies state feedback; it cannot independently prove native HID execution.
+
+`verify_ble_native.py` defaults to local preflight without opening USB/BLE. Explicit `--execute` checks mappings, unlocked state, the designated chat's cache, and the operator's confirmation of the active target before scheduling bounded native events and temporarily disconnecting USB data. Its report separates queue completion, submitted messages in the same BLE session, macOS topology showing only Bluetooth, and actual changes/restoration in the designated chat. It does not write settings through IPC to manufacture the expected change. Interpret `transport_verified` separately from `desktop_execution_confirmed`. Dial navigation highlighting is evidenced by native ambient feedback generated by that desktop branch and paired device frames; it does not establish a specific DOM focus or control identity.
+
+Fast/Plan passed again with strict timing checks: the complete execution interval remained BLE-only without errors, and each plan submitted exactly four expected native messages in the same session. Desktop changes must come from actual target-cache reads after ARM, including the intermediate state and restoration; cache changes before scheduling input cannot count as success.
+
+Dial lighting diagnostics are scheduled over USB before capturing baseline, post-clockwise, post-counterclockwise, and restored framebuffers with matching render state in the same authenticated BLE session while USB data is disconnected. Frames are retrieved afterward. Preview and frozen modes are disabled, and Agent slot state is compared so simulated lighting, submission receipts, or background running colors are not mistaken for desktop navigation feedback. Each frame is copied in 113 chunks of at most 16KiB, servicing input and checking session/UI state throughout. Final hardware verification passed.
 
 Common CDC commands:
 
@@ -187,7 +235,44 @@ Common CDC commands:
 
 During screenshot transfer, the companion cannot acquire the serial lock, so metadata observed after transfer may exceed its TTL. This does not change the image copied when `SCREEN` began. To validate live state, save a fresh `STATUS` before the screenshot; release the lock after transfer and allow the companion to refresh.
 
-### Current 0.11.1 validation results
+### Current 0.12.0 validation results (in development, unreleased)
+
+The final full suite passed **337 host tests in 49.060 seconds**. The final PlatformIO build succeeded in 37.87 seconds. App-only flashing verified the same Tab5 reporting exactly version 0.12.0 while preserving bonds, preferences, and fonts. The following evidence applies to this device and macOS desktop version, not every mapping, host, or recovery scenario.
+
+| Test | Observed result and boundary |
+| --- | --- |
+| Pairing and restart | P4 RFC 5903 self-test, real six-digit PIN pairing, NVS bonding, encryption, and authentication passed. Repeated app-only update restarts reconnected without a PIN and received metadata acknowledgements |
+| Native HID handshake | macOS subscribed to HID and reached ready. The desktop received BLE `device.status`/`rgbcfg` replies, and the device observed a native session |
+| Fast | With USB data disconnected and only Bluetooth listed by the system, the designated chat changed Fast → Standard → Fast. Both transport and desktop execution were confirmed |
+| Plan | Under the same BLE-only conditions, the designated chat changed Default → Plan → Default. Both transport and desktop execution were confirmed |
+| Dial navigation highlight | With only BLE in the same authenticated session, clockwise/counterclockwise turns separately triggered the desktop's navigation-selection branch for visible, enabled composer controls, returning blue `#304FFE`, effect 2 (snake), ambient feedback. This confirms navigation highlighting, not a specific DOM `activeElement`, control name, or two different targets |
+| Four lighting frames | Baseline off → clockwise blue → counterclockwise blue again → restored off. Matching render state and framebuffer colors agree with RGB565 quantization. Preview/frozen modes were off and Agent slot state stayed unchanged, excluding background running-color confusion |
+| Running animation | Border pixels for the running slot changed across the four frames while neon frame counts advanced, confirming actual animation rendering. Amber/red/green and other mappings remain untested |
+| Metadata stress | 20 rounds of new seven-title content and 20 rounds of identical content each sent `TITLES` and `HOST_CONFIG`: 80/80 correctly sequenced ACKs, with zero parse, state, drop, or ACK errors |
+| Stress performance | New content: maximum input-service interval 10,178µs, maximum complete render 280,275µs, and 40 renders. Identical content: maximum input interval 4,000µs and no additional renders. Free heap changed by zero during the observation window |
+| Stress cleanup | Original metadata, preferences, and capture state were restored, with zero cleanup errors |
+| Companion switching | The same production `--watch --transport auto` process completed USB→BLE→USB, with strict sequence ACKs for both metadata types in all three phases. BLE first succeeded about seven seconds after USB went offline, without a PIN. After USB returned, the BLE session remained ready, metadata/config/chat state was fresh, and no inputs were replayed |
+| Installed login service | An independently installed auto service restored notifications during a 30-second USB data absence with only BLE listed. The device received 20 metadata commands with zero notification failures and the BLE session preserved; titles/config/chat state was fresh after USB returned |
+| Bluetooth off/on | After Tab5 Bluetooth was off for three seconds, native HID recovered in a new session about 1.5 seconds after enabling it, encrypted, authenticated, and bonded without a PIN. The same auto process then restored GATT in that session, with strict sequence ACKs for both metadata types continuing for 90 seconds before switching back to USB |
+| Post-switch cleanup | Native input count remained 10 with no replay. USB/BLE queues were empty; no keys, joystick displacement, or release recovery remained pending. Failure/drop/stale and parse/state error counters were zero; titles, configuration, and chat state were fresh |
+| Unconfirmed | Specific DOM focus and control identity, amber/red/green and other lighting mappings, other uncovered mappings, physical power loss and battery runtime, computer Bluetooth toggling/long sleep, and keys held across power loss |
+
+Input intervals and heap changes are finite samples, not universal performance bounds or long-term memory conclusions. Fast/Plan have desktop state-change evidence; the dial has navigation-selection feedback and device-frame evidence, but a single candidate may be highlighted twice. These conclusions do not extend to other actions with only ACKs or submission counts. The UI's submitted and Target not verified meanings remain unchanged.
+
+The final four frames shared the same authenticated BLE session and connection generation, with preview/frozen modes off and a native session observed. Times are relative to ARM. Total copy time and input-service intervals are separate measurements:
+
+| Frame | Time after ARM (ms) | Ambient | Total copy time (µs) | Maximum input-service gap during copy (µs) | Neon frame count |
+| --- | ---: | --- | ---: | ---: | ---: |
+| Baseline | 6,011 | Off | 57,061 | 1,117 | 291 |
+| After clockwise | 16,508 | Blue snake | 58,354 | 1,157 | 826 |
+| After counterclockwise | 18,511 | Blue snake | 57,546 | 1,157 | 918 |
+| Restored | 24,515 | Off | 58,109 | 1,168 | 1,227 |
+
+The header ambient center pixel was `[198,203,214] → [49,81,255] → [49,81,255] → [198,203,214]`, consistent with RGB565 quantization of native `#304FFE`. The running-slot border comparison covered 3,346 pixels; the later frames differed from baseline by 336/508/508 pixels. Slot configuration state was unchanged, and advancing neon counts further confirmed animation. ARM took 179µs, with a maximum preparation step of 44µs.
+
+A separate measurement began with `PERF_RESET` immediately before `USB_PAUSE` and used the first `STATUS` snapshot after USB returned. The complete BLE test window recorded a maximum input-sampling interval of **16,253µs** and maximum rendering duration of **185,108µs**. Rendering included transition redraws and is not input blocking time. This window excluded synchronous preflight `STATUS` JSON output. An earlier approximately 245ms statistic included that diagnostic output, so it cannot be compared with 16.253ms as a like-for-like improvement. The table independently demonstrates continued input service during chunked copying.
+
+### Historical 0.11.1 validation results (USB)
 
 - The full **233-test host suite passed**, as did all generated-asset checks. The final PlatformIO build succeeded, and the firmware was flashed to Tab5.
 - All ten complete device transitions passed the **50ms input-service interval** threshold, with a maximum of **25,011µs**. The same ten-phase 0.11.0 baseline reached **1,109,016µs**. These measurements cover themes, languages, settings, game pages, and new title-cache construction.
@@ -226,6 +311,7 @@ These are short device-side samples, not universal performance limits or compute
 
 | Version | Changes |
 | --- | --- |
+| 0.12.0 (in development, unreleased) | Native USB/BLE protocol, PIN pairing and reconnection, and encrypted metadata GATT; Fast/Plan desktop execution, metadata stress, and automatic switching have case-specific evidence in the validation table |
 | 0.11.1 | Separate tracked settings and native targets, explicit connection evidence, nonblocking HID and release recovery, cooperative input during drawing, pause on game exit, permission-patch resynchronization, and strict flashing verification |
 | 0.11.0 | Runtime English/Chinese interface, bilingual documentation, and a prebuilt firmware/font download bundle |
 | 0.10.2 | Two-line titles, automatic overflow scrolling, touch pause, glyph-mask caching, and scroll regression tests |

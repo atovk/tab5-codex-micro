@@ -4,7 +4,7 @@
 
 Turn **M5Stack Tab5** into a touch controller for Codex. It preserves Micro's dial, joystick, and key interactions, and adds chat metadata, two themes, sound, and games to the 5-inch 1280×720 touchscreen.
 
-This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Current version: **0.11.1**.
+This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Latest published version: **0.11.1**. The source checkout is developing **0.12.0 USB/Bluetooth support**; hardware validation is ongoing and it is not released. The 0.11.1 download below supports USB only.
 
 ## Download and flash
 
@@ -36,6 +36,7 @@ These English UI previews are captured from the 0.11.1 Tab5 framebuffer. Chat ti
 
 ## Features
 
+- **USB/Bluetooth support (0.12.0 in development):** native keys, dial, joystick, and lighting can use USB HID or BLE HID. Device settings provide a pairing PIN, saved bonds, and reconnection. Bluetooth Fast/Plan desktop changes and metadata synchronization have been verified on hardware; validation limits are described below.
 - **Native Micro interactions:** rotate around the dial's outer ring; tap or hold its center. The joystick sends continuous direction and distance and returns to center on release. The desktop app applies its Micro mappings.
 - **Chat keys:** six Agent keys show host lighting states and animated activity borders. A local companion can add titles for explicitly assigned chats.
 - **Two-line titles:** Chinese and English wrap at the normal font size. Longer titles scroll slowly in a loop, pause during touch, and resume after release.
@@ -47,7 +48,7 @@ These English UI previews are captured from the 0.11.1 Tab5 framebuffer. Chat ti
 
 ## Everyday controls
 
-Connect USB-C to the computer, then configure keys, dial behavior, and voice in **Settings → Codex Micro** in the Codex desktop app.
+Connect USB-C, or pair Bluetooth on the 0.12.0 development firmware using the steps below. Configure keys, dial behavior, and voice in **Settings → Codex Micro** in the Codex desktop app.
 
 | Gesture | Behavior |
 | --- | --- |
@@ -57,18 +58,29 @@ Connect USB-C to the computer, then configure keys, dial behavior, and voice in 
 | Tap an Agent key | Trigger its corresponding desktop chat shortcut |
 | Hold/release a command key | Preserve native press/release, including push-to-talk mappings |
 | Sun/moon at the top right | Switch and save the theme |
-| Gear at the top right | Volume, mute, brightness, and language |
+| Gear at the top right | Volume, mute, brightness, and language; the development build adds Connections |
 | Games at the top right | Open the local game library |
 
-Fast/Plan/Approve retain their native desktop behavior; they do not establish that the action targets the chat in the settings strip. The interface explicitly says **Target not verified**. A brief **USB not sent** receipt means submission failed or the queue rejected the event, with no promise of later delivery. **USB submitted** appears only after the USB stack accepts the complete message; it still does not acknowledge desktop execution.
+Fast/Plan/Approve retain their native desktop behavior; they do not establish that the action targets the chat in the settings strip. The interface explicitly says **Target not verified**. A brief **USB not sent** or **BLE not sent** receipt means submission failed or the queue rejected the event, with no promise of later delivery. **USB submitted** or **BLE submitted** only means that the corresponding transport stack accepted the complete message; it does not acknowledge desktop execution.
 
-The header's **USB connected** label means that USB is mounted; **Last** lighting describes the last native lighting information received. An observed native session, a current USB connection, and fresh bridge metadata are independent evidence and cannot substitute for each other.
+The header distinguishes USB and Bluetooth connections; **Last** lighting describes the last native lighting information received. An observed native session, a current transport connection, and fresh bridge metadata are independent evidence and cannot substitute for each other.
 
 The desktop settings determine the final behavior of dial modes, command keys, joystick actions, and voice. Default voice input uses the **computer microphone**, not the Tab5 microphone. The auxiliary key may be unassigned until separate microphone keys are enabled and configured on the desktop.
 
+## Bluetooth pairing and reconnection (in development)
+
+These steps describe the unreleased 0.12.0 implementation. Hardware tests have verified PIN pairing, reconnection after application updates that preserve bonds, and desktop Fast/Standard and Default/Plan changes followed by restoration with only Bluetooth connected. Clockwise and counterclockwise dial events triggered desktop navigation highlighting, confirmed through native blue lighting feedback and four Tab5 frames. Metadata stress tests, automatic USB/BLE switching in both the foreground companion and installed login service, and native/metadata recovery after turning Tab5 Bluetooth off and on have also passed. Specific DOM focus, control identity, battery runtime, computer Bluetooth toggling, and long sleep remain unconfirmed. See the [Bluetooth guide](docs/BLUETOOTH.en.md) for setup and evidence by test case.
+
+1. On Tab5, open **Gear → Connections**, turn Bluetooth on, and tap **Start pairing**. The window for pairing a new computer lasts two minutes.
+2. In the computer's Bluetooth settings, select the name shown on Tab5 (`Tab5 Micro` followed by four characters). Immediately enter the **six-digit PIN displayed on Tab5**, including leading zeroes. macOS may show a standalone pairing dialog. The SMP transaction times out after about 30 seconds; the two-minute admission window does not extend it. The PIN is not a fixed default password. After a timeout, close the old prompt and restart pairing.
+3. After pairing, check the device and configure mappings in Codex Micro settings. Saved bonds allow automatic reconnection; an ordinary restart or turning Bluetooth off and on does not require pairing again.
+4. A USB data connection takes priority. Unplugging it lets ready Bluetooth take over; reconnecting USB restores wired input. Old key events, turns, and partial gestures are not replayed onto the new connection.
+
+To change computers or repair a stale bond, tap **Forget pairing** on Tab5 and confirm, remove the old pairing record on the computer, and pair again. Bluetooth replaces the data link; Tab5 still needs a battery or suitable power source. Firmware keeps battery charging disabled, and battery runtime has not been validated.
+
 ## Optional: chat titles and settings bridge
 
-Native Micro HID lighting messages contain neither chat titles nor the current chat's Fast/Plan/permission text. Two local processes supplement this metadata while native USB HID continues to handle input. The companion bridge currently targets **macOS** and requires the source repository and its Python dependencies; it is not required merely to flash the downloaded bundle.
+Native Micro HID lighting messages contain neither chat titles nor the current chat's Fast/Plan/permission text. Two local processes supplement this metadata while native USB/BLE HID handles input and lighting. The companion bridge currently targets **macOS** and requires the source repository and its Python dependencies; it is not required merely to flash the downloaded bundle. Wireless metadata in the development build uses a separate encrypted GATT service. A native Bluetooth connection alone does not supply titles or chat settings.
 
 ```sh
 git clone https://github.com/atovk/tab5-codex-micro.git
@@ -85,19 +97,23 @@ Assign local chats to the six keys in desktop **Settings → Codex Micro → Age
 # Inspect configuration without opening hardware; titles are hidden by default.
 .venv/bin/python tools/title_sync.py --dry-run
 
-# Continuously synchronize titles, configuration, and available chat settings.
-.venv/bin/python tools/title_sync.py --watch
+# Sync continuously; auto prefers USB, then paired BLE when matching USB is absent.
+.venv/bin/python tools/title_sync.py --watch --transport auto
 ```
 
 Alternatively, use the macOS login service instead of a foreground `--watch` process:
 
 ```sh
-.venv/bin/python tools/title_sync_service.py install
+.venv/bin/python tools/title_sync_service.py install --transport auto
 .venv/bin/python tools/title_sync_service.py status
 .venv/bin/python tools/title_sync_service.py stop --remove
 ```
 
-The service references this checkout's `.venv` and scripts; reinstall it after moving the repository. For foreground use with multiple Tab5 devices, select `--port`, or set `TAB5_SERIAL_NUMBER` to the full application serial shown by `discover`. The login service expects a unique device by default; configure the environment variable in your own LaunchAgent for multiple devices.
+The service references this checkout's `.venv` and scripts; reinstall it after moving the repository. Choose either foreground `--watch` or the login service, rather than running two sync instances. `chat_state_bridge.py` only updates a local cache and does not open another Bluetooth connection.
+
+Use `tools/verify_device.py discover` to identify the P4 application serial, then select it with `--device-serial TAB5-0123456789AB` (replace this example). Adding the option during service installation saves the selection and permits startup without USB. `TAB5_SERIAL_NUMBER` is also supported. A BLE name or C6 radio address cannot replace P4 identity; ambiguous candidates are rejected. `--port` explicitly selects USB and does not fall back to BLE when that port disappears.
+
+`--transport usb` sends metadata only over USB; `--transport ble` sends it only over Bluetooth and **does not force native keys to use Bluetooth**. If a screenshot or flashing tool owns the USB lock, auto skips that heartbeat instead of bypassing the lock over BLE. Wireless tools use a pinned Bleak dependency; see the [Bluetooth guide](docs/BLUETOOTH.en.md) for setup, reconnection, and diagnostic limits.
 
 ### Real settings for a designated chat
 
@@ -113,7 +129,9 @@ The **Tracked chat** area identifies the target, and a separate read-only strip 
 
 ### Metadata and privacy
 
-The title companion reads saved key assignments and the required titles. The state bridge retains only the target identity and a limited settings projection, not conversation bodies or tool output. Its cache lives in `~/Library/Caches/Tab5 Codex Micro/`. Ordinary logs omit titles. Explicit diagnostics such as `--show-titles`, `--once`, and device `STATUS` can contain titles or chat identifiers; inspect them before sharing.
+The title companion reads saved key assignments and the required titles. The state bridge retains only the target identity and a limited settings projection, not conversation bodies or tool output. Its cache lives in `~/Library/Caches/Tab5 Codex Micro/`. Ordinary logs and `--once` without `--show-titles` omit titles. `--show-titles` and device `STATUS` can contain titles or chat identifiers; inspect them before sharing. Metadata is reread after BLE connection and before each message, rather than replaying pre-reconnection state as fresh.
+
+The BLE companion's public serial matching is not cryptographic device authentication and currently cannot prevent an active GATT impersonator from obtaining metadata. See the [device identity boundary](docs/BLUETOOTH.en.md#device-identity-boundary) for the real firmware's encrypted pairing requirements and this limitation.
 
 ## Games
 
@@ -160,15 +178,18 @@ Development primarily targets macOS and requires Git and a working C++ compiler.
 
 `hid-status` only requests state; it does not trigger keys. Input, metadata, fonts, and scrolling have host-side logic tests. Device tools cover touch, pixel restoration, sound, and themes. The new `tools/verify_transition_performance.py` measures theme, language, settings, and game-page transitions plus initial title-cache construction. It isolates native inputs and reads metrics after each completed transition, without treating command acknowledgement time as complete render time. See the [development notes](docs/development.en.md) for architecture, protocol boundaries, and validation methods.
 
+Current 0.12.0 source passed **337 host tests**, built successfully, and was flashed to hardware. Final four-frame Bluetooth dial verification passed. The maximum gap between input services during chunked capture was **1.168ms**; the independent BLE test window recorded a maximum input-sampling interval of **16.253ms**. See the development notes for measurement scope and details. This version remains unreleased.
+
 ## Current limits
 
 - This third-party protocol implementation may be affected by desktop updates. Incompatible state interfaces or expired metadata show unknown rather than substituting saved defaults for real state.
+- The 0.12.0 dual-transport implementation is unreleased. See the [Bluetooth guide](docs/BLUETOOTH.en.md) for verified cases and remaining acceptance checks. Controlled Fast/Plan, dial navigation highlight, and blue lighting tests do not establish every mapping, specific DOM focus, or other lighting colors. Existing 0.11.1 screenshots and historical results are not Bluetooth evidence.
 - Live settings follow one designated local chat. Agent titles require saved Custom assignments. Automatic following of desktop selection, remote chats, and reliable title matching for dynamic recent lists are not implemented.
-- The settings strip describes the **designated chat's next send**, not a running turn or the current target of native buttons. USB submission, a historical native session, and fresh bridge data cannot independently prove desktop execution.
+- The settings strip describes the **designated chat's next send**, not a running turn or the current target of native buttons. USB/BLE submission, a historical native session, and fresh bridge data cannot independently prove desktop execution.
 - Activity labels are inferred from desktop lighting colors; custom colors may affect them. Custom input mappings remain controlled by the desktop.
 - Titles use the BMP coverage of Noto Sans SC. Unsupported characters, including some emoji, are replaced individually. Each title is limited to **191 UTF-8 bytes**; received text beyond two lines scrolls. Changing UI language does not translate chat titles.
 - Automatic rotation supports two landscape orientations, with no portrait layout.
-- Firmware disables battery charging, the idle radio module, and external power outputs to limit computer USB load. It does not charge the battery while running.
+- Current source enables the onboard C6 as the BLE controller while keeping battery charging and external power outputs disabled. It does not charge the battery while running. C6/ESP-Hosted firmware compatibility remains part of hardware validation.
 
 ## License and references
 

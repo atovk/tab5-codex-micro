@@ -6,6 +6,7 @@ from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import io
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -171,6 +172,121 @@ class SourceFlashTests(unittest.TestCase):
                 flash.main(['--skip-build', '--port', 'selected-rom'])
         self.assertEqual(events, ['lock', 'flash', 'unlock'])
         shared.assert_called_once_with(10)
+
+    def app_only(self):
+        self.args.app_only = True
+        application = self.image.with_name('firmware.bin')
+        application.write_bytes(self.image.read_bytes()[0x10000:])
+        return application
+
+    def test_app_only_writes_exactly_the_application_and_verifies_reconnect(self):
+        application = self.app_only()
+        self.provider.side_effect = [[port('selected-rom', flash.ROM_PID)],
+                                     [port('other', serial_number=OTHER_SERIAL), port('target-app')]]
+        self.assertEqual(flash.flash(self.args, self.image), 'target-app')
+        commands = [call.args[0] for call in self.runner.call_args_list]
+        self.assertEqual(len(commands), 4)
+        self.assertEqual(commands[0][-1], 'read-mac')
+        writes = [command for command in commands if 'write-flash' in command]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][writes[0].index('write-flash') + 1:], ['0x10000', application])
+        self.assertNotIn(self.image, writes[0])
+        self.assertIn('watchdog-reset', commands[-1])
+        self.status.assert_called_once_with('target-app', 3)
+
+    def test_app_only_rejects_invalid_application_before_any_usb_activity(self):
+        application = self.app_only()
+        correct = application.read_bytes()
+        wrong_chip = bytearray(correct)
+        struct.pack_into('<H', wrong_chip, 12, 9)
+        changed_payload = bytearray(correct)
+        changed_payload[-1] ^= 1
+        for invalid in (b'', correct[:23], correct[:-1], correct + b'\xff',
+                        bytes(changed_payload), bytes(wrong_chip),
+                        correct + b'\xff' * (0x500001 - len(correct))):
+            with self.subTest(size=len(invalid)):
+                application.write_bytes(invalid)
+                with self.assertRaises(RuntimeError):
+                    flash.flash(self.args, self.image)
+                self.provider.assert_not_called()
+                self.runner.assert_not_called()
+        application.unlink()
+        with self.assertRaisesRegex(RuntimeError, 'Build firmware.bin'):
+            flash.flash(self.args, self.image)
+        self.provider.assert_not_called()
+        self.runner.assert_not_called()
+
+    def test_app_only_retains_complete_factory_validation(self):
+        self.app_only()
+        original = self.image.read_bytes()
+        for offset in (0x2000, 0x8000, 0x10000):
+            with self.subTest(offset=hex(offset)):
+                corrupt = bytearray(original)
+                corrupt[offset] = 0
+                self.image.write_bytes(corrupt)
+                with self.assertRaises(RuntimeError):
+                    flash.flash(self.args, self.image)
+                self.provider.assert_not_called()
+                self.runner.assert_not_called()
+
+    def test_app_only_rejects_changed_or_ambiguous_app_partitions(self):
+        self.app_only()
+        original = self.image.read_bytes()
+        mutations = []
+        for field, value in ((4, 0x20000), (8, 0x400000)):
+            data = bytearray(original)
+            struct.pack_into('<I', data, 0x8000 + field, value)
+            mutations.append(data)
+        for subtype, offset in ((0, 0x10000), (0x10, 0x520000)):
+            data = bytearray(original)
+            struct.pack_into('<HBBII16sI', data, 0x8040, 0x50AA, 0, subtype,
+                             offset, 0x500000, b'extra-app', 0)
+            mutations.append(data)
+        for index, data in enumerate(mutations):
+            with self.subTest(index=index):
+                self.image.write_bytes(data)
+                with self.assertRaises(RuntimeError):
+                    flash.flash(self.args, self.image)
+                self.provider.assert_not_called()
+                self.runner.assert_not_called()
+
+    def test_app_only_accepts_exact_capacity_but_not_one_byte_more(self):
+        application = firmware_fixture()[0x10000:].ljust(0x500000, b'\xff')
+        factory = firmware_fixture()[:0x10000] + application
+        flash.inspect_firmware(factory, VERSION)
+        self.assertEqual(flash.inspect_application(factory, application), 0x10000)
+        with self.assertRaisesRegex(RuntimeError, 'exceeds its partition'):
+            flash.inspect_application(factory, application + b'\xff')
+
+    def test_app_only_still_rejects_wrong_rom_chip_identity(self):
+        self.app_only()
+        self.args.port = 'selected-app'
+        self.provider.return_value = [port('selected-app')]
+        self.runner.return_value = SimpleNamespace(stdout='MAC: aa:bb:cc:dd:ee:ff\n')
+        with patch.object(flash, 'enter_rom', return_value='new-rom'):
+            with self.assertRaisesRegex(RuntimeError, 'identity differs'):
+                flash.flash(self.args, self.image)
+        self.assertEqual(self.runner.call_count, 1)
+        self.status.assert_not_called()
+
+    def test_app_only_still_requires_matching_version_after_restart(self):
+        self.app_only()
+        self.provider.side_effect = [[port('selected-rom', flash.ROM_PID)], [port('target-app')]]
+        self.status.return_value = FIRMWARE + '-old'
+        with self.assertRaisesRegex(RuntimeError, 'expected firmware version'):
+            flash.flash(self.args, self.image)
+        self.assertNotIn('verified', self.output.getvalue())
+
+    def test_app_only_cannot_be_combined_with_font_image(self):
+        self.app_only()
+        self.args.font_image = Path('title-font.bin')
+        with self.assertRaisesRegex(RuntimeError, 'cannot be combined'):
+            flash.flash(self.args, self.image)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            flash.main(['--app-only', '--font-image', 'title-font.bin'])
+        self.assertEqual(caught.exception.code, 2)
+        self.provider.assert_not_called()
+        self.runner.assert_not_called()
 
 
 class StatusPrivacyTests(unittest.TestCase):

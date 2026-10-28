@@ -16,7 +16,7 @@ from tab5_transport import open_serial
 from verify_device import read_line
 
 
-def verify(output: Path) -> dict:
+def verify(output: Path, firmware: str = "0.11.1") -> dict:
     events: list[dict] = []
     checks: dict = {}
     with open_serial(timeout=12) as connection:
@@ -54,7 +54,8 @@ def verify(output: Path) -> dict:
             return {"m": "v.oai.hid", "p": {"k": key, "act": action}}
 
         before = status()
-        assert before["firmware"] == "tab5-micro-0.11.1", before["firmware"]
+        expected = firmware if firmware.startswith("tab5-micro-") else "tab5-micro-" + firmware
+        assert before["firmware"] == expected, before["firmware"]
         assert before["usb_mounted"] and before["host_seen"], before
         command("MICRO", "MICRO")
         command("INPUT_TEST_BEGIN", "INPUT_TEST_READY")
@@ -207,5 +208,8 @@ def verify(output: Path) -> dict:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("output",type=Path,nargs="?",default=Path("artifacts/controls-qa-0.11.1.json"))
-    print(json.dumps(verify(parser.parse_args().output),ensure_ascii=False,indent=2))
+    parser.add_argument("output",type=Path,nargs="?")
+    parser.add_argument("--firmware",default="0.11.1",help="Exact expected firmware version")
+    args=parser.parse_args()
+    output=args.output or Path(f"artifacts/controls-qa-{args.firmware.removeprefix('tab5-micro-')}.json")
+    print(json.dumps(verify(output,args.firmware),ensure_ascii=False,indent=2))

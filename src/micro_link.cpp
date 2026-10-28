@@ -7,6 +7,7 @@
 #include "title_font.h"
 #include "ui_locale.h"
 #include "micro_transport.h"
+#include "micro_connection.h"
 #include <cmath>
 #include <Arduino.h>
 #include <algorithm>
@@ -29,16 +30,35 @@ const uint8_t descriptor[] = {
   0x15,0x00, 0x26,0xff,0x00, 0x75,0x08, 0x95,0x3f,
   0x09,0x02, 0x81,0x02, 0x95,0x3f, 0x09,0x03, 0x91,0x02, 0xc0
 };
-struct Frame { uint8_t data[63]; };
-QueueHandle_t frames;
+using Link=MicroTransport::Link;
+struct Frame { uint8_t data[63]; Link link=Link::Usb; uint32_t session=0; };
+QueueHandle_t usbFrames,bleFrames;
 USBHID hid;
+MicroLink::BleEndpoint bleEndpoint;
+MicroLink::BleStatus bleStatus;
+MicroTransport::Selection selection;
+MicroTransport::SessionGeneration selectedGeneration;
+uint32_t usbSession=1;
+struct Channel {
+  MicroTransport::Queue outgoing;
+  bool connected=false,seen=false,keysReceived=false,ambientReceived=false;
+  uint32_t session=0,nativeRxAt=0,rpcCount=0,inputsSubmitted=0;
+  MicroUI::Slot slots[6];
+  HostFeedback::Lights lights;
+  MicroTransport::JsonAssembler assembler;
+  uint32_t rxAt=0;
+};
+Channel usbChannel,bleChannel;
+Channel& channel(Link link) { return link==Link::Bluetooth ? bleChannel : usbChannel; }
+bool blockedBleSession=false;
+uint32_t blockedBleSessionId=0;
 MicroUI::State model;
 MicroUI::State previewModel;
 bool lightingPreview=false;
 bool hostSeen=false;
 bool titlesReceived=false;
 uint32_t titlesAt=0;
-bool configReceived=false, keysReceived=false, ambientReceived=false;
+bool configReceived=false;
 bool chatReceived=false;
 MicroTransport::KeyReceipts actionReceipts;
 uint32_t configAt=0, rgbRequests=0, stateErrors=0;
@@ -47,7 +67,6 @@ bool captureInput=false;
 uint32_t capturedInputs=0;
 bool diagnosticFrameActive=false, diagnosticsDeferred=false, usbWasMounted=false;
 uint32_t nativeRxAt=0;
-MicroTransport::Queue outgoing;
 MicroTransport::DeferredLines deferredLines;
 struct RxDiagnostics {
   uint32_t raw=0, output=0, feature=0, fallback=0, accepted=0, rejected=0, dropped=0;
@@ -56,6 +75,7 @@ struct RxDiagnostics {
   uint16_t length=0;
   uint8_t deviceId=0, deviceHead[4]={};
   uint16_t deviceLength=0;
+  uint32_t bleOutput=0,bleFeature=0,staleSession=0;
 };
 RxDiagnostics rx;
 portMUX_TYPE rxLock=portMUX_INITIALIZER_UNLOCKED;
@@ -69,7 +89,8 @@ void rejectFrame(uint32_t RxDiagnostics::*reason) {
   ++rx.rejected; ++(rx.*reason);
   portEXIT_CRITICAL(&rxLock);
 }
-void queueFrame(uint8_t id,const uint8_t *data,uint16_t len) {
+void queueFrame(uint8_t id,const uint8_t *data,uint16_t len,
+                Link link=Link::Usb,uint32_t session=0) {
   portENTER_CRITICAL(&rxLock);
   rx.deviceId=id; rx.deviceLength=len;
   memset(rx.deviceHead,0,sizeof(rx.deviceHead));
@@ -83,9 +104,13 @@ void queueFrame(uint8_t id,const uint8_t *data,uint16_t len) {
   if (!data || len<2 || len>63) { rejectFrame(&RxDiagnostics::rejectSize); return; }
   if (data[0]!=2) { rejectFrame(&RxDiagnostics::rejectChannel); return; }
   if (data[1]>61 || data[1]+2>len) { rejectFrame(&RxDiagnostics::rejectSize); return; }
-  if (!frames) { rejectFrame(&RxDiagnostics::rejectQueue); return; }
-  Frame f{}; memcpy(f.data,data,len);
-  const bool queued=xQueueSend(frames,&f,0)==pdTRUE;
+  const QueueHandle_t inbox=link==Link::Usb ? usbFrames : bleFrames;
+  if (!inbox) { rejectFrame(&RxDiagnostics::rejectQueue); return; }
+  Frame f{}; memcpy(f.data,data,len); f.link=link;
+  portENTER_CRITICAL(&rxLock);
+  f.session=link==Link::Usb ? usbSession : session;
+  portEXIT_CRITICAL(&rxLock);
+  const bool queued=xQueueSend(inbox,&f,0)==pdTRUE;
   portENTER_CRITICAL(&rxLock);
   if (queued) ++rx.accepted;
   else { ++rx.dropped; ++rx.rejected; ++rx.rejectQueue; }
@@ -107,14 +132,8 @@ public:
     queueFrame(id,data,len);
   }
 } device;
-char json[4096];
-size_t jsonLen=0;
-int depth=0;
-bool inString=false, escaped=false;
-uint32_t rxAt=0;
-
-bool transmit(const String &line,MicroTransport::Tag tag={}) {
-  return outgoing.enqueue(line.c_str(),line.length(),tag,millis());
+bool transmit(Channel& target,const String &line,MicroTransport::Tag tag={}) {
+  return target.outgoing.enqueue(line.c_str(),line.length(),tag,millis());
 }
 bool inputsSuppressed() { return captureInput || diagnosticFrameActive; }
 void diagnosticLine(const String& line) {
@@ -204,10 +223,19 @@ bool readConfig(JsonDocument& doc,HostFeedback::Config& result,bool& available) 
       || !doc["actions"].is<JsonArray>() || doc["actions"].size()!=7) return false;
   for (int i=0;i<7;++i)
     if (!readEnum(doc["actions"][i],actions,result.actions[i])) return false;
+  // Older companions omit this optional mapping fact. Never retain a
+  // previously known Plan assignment when a new snapshot omits it.
+  result.joystickUpPlan=false;
+  if (doc.containsKey("joystick_up")) {
+    static const char* const mappings[]={"unknown","plan"};
+    uint8_t mapping=0;
+    if (!readEnum(doc["joystick_up"],mappings,mapping)) return false;
+    result.joystickUpPlan=mapping==1;
+  }
   if (!available) {
     if (result.defaultTier!=HostFeedback::Tier::Unknown
         || result.encoder!=HostFeedback::Encoder::Unknown
-        || result.voice!=HostFeedback::Voice::Unknown) return false;
+        || result.voice!=HostFeedback::Voice::Unknown || result.joystickUpPlan) return false;
     for (const auto action:result.actions) if (action!=HostFeedback::Action::Unknown) return false;
   }
   result.fresh=available;
@@ -273,12 +301,17 @@ void actionFeedback(const MicroUI::Event& event,bool sent) {
   showReceipt(index,sent ? actionReceipts.submitted(uint8_t(index+6),event.action)
                          : actionReceipts.failed(uint8_t(index+6)));
 }
-void serviceTransmit() {
+void serviceTransmit(Link link) {
+  auto& target=channel(link);
+  auto& outgoing=target.outgoing;
   const auto* message=outgoing.next(millis());
   const uint16_t dropped=outgoing.takeDroppedKeys();
-  for (unsigned index=0;index<7;++index) if (dropped&(1u<<(index+6)))
-    showReceipt(index,actionReceipts.failed(uint8_t(index+6)));
-  if (!message || !tud_mounted() || !hid.ready()) return;
+  if (link==selection.active())
+    for (unsigned index=0;index<7;++index) if (dropped&(1u<<(index+6)))
+      showReceipt(index,actionReceipts.failed(uint8_t(index+6)));
+  const bool ready=link==Link::Usb ? tud_mounted() && hid.ready()
+      : bleStatus.connected && bleStatus.ready && bleEndpoint.submit;
+  if (!message || !ready || !target.connected) return;
   uint8_t report[63]={2,0};
   const size_t count=std::min<size_t>(61,message->length-message->offset);
   report[1]=count; memcpy(report+2,message->bytes+message->offset,count);
@@ -286,51 +319,53 @@ void serviceTransmit() {
   // then can report failure after actually submitting the packet. Use the
   // underlying nonblocking API so a retry can never duplicate that packet.
   // This interface has exactly one input-report producer: this scheduler.
-  if (!tud_hid_n_report(0,reportId,report,sizeof(report))) { outgoing.failed(); return; }
+  const bool accepted=link==Link::Usb ? tud_hid_n_report(0,reportId,report,sizeof(report))
+      : bleEndpoint.submit(reportId,report,sizeof(report),target.session);
+  if (!accepted) { outgoing.failed(); return; }
   MicroTransport::Message completed;
   if (!outgoing.submitted(count,completed) || completed.tag.kind==MicroTransport::Kind::Response) return;
-  ++sentKeys;
-  if (completed.tag.kind==MicroTransport::Kind::Key && completed.tag.key>=0) {
+  ++sentKeys; ++target.inputsSubmitted;
+  if (link==selection.active() && completed.tag.kind==MicroTransport::Kind::Key && completed.tag.key>=0) {
     MicroUI::Event event;
     event.key=MicroTransport::keys[completed.tag.key]; event.action=completed.tag.action;
     actionFeedback(event,true);
   }
 }
-void process() {
+void process(Channel& source) {
   JsonDocument req;
-  if (deserializeJson(req,json,jsonLen)) { ++parseErrors; return; }
+  if (deserializeJson(req,source.assembler.data(),source.assembler.size())) { ++parseErrors; return; }
   const char *method=req["method"]|"";
   if (!*method) return;
-  nativeRxAt=millis();
+  source.nativeRxAt=millis();
   strlcpy(lastMethod,method,sizeof(lastMethod));
   JsonDocument response;
   response["id"]=req["id"];
   if (!strcmp(method,"device.status")) {
-    hostSeen=true;
+    source.seen=true;
     JsonObject r=response["result"].to<JsonObject>();
-    r["version"]="tab5-micro-0.11.1"; r["profile_index"]=0; r["layer_index"]=0;
+    r["version"]="tab5-micro-0.12.0"; r["profile_index"]=0; r["layer_index"]=0;
     int battery=M5.Power.getBatteryLevel();
     if (battery>=0 && battery<=100) r["battery"]=battery;
     r["is_charging"]=M5.Power.isCharging()==m5::Power_Class::is_charging_t::is_charging;
   } else if (!strcmp(method,"sys.version")) {
-    hostSeen=true;
-    response["result"]["version"]="tab5-micro-0.11.1";
+    source.seen=true;
+    response["result"]["version"]="tab5-micro-0.12.0";
   } else if (!strcmp(method,"v.oai.thstatus")) {
     for (JsonObject item:req["params"].as<JsonArray>()) {
       int i=item["id"]|-1; if (i<0 || i>5) continue;
-      auto &slot=model.slots[i];
+      auto &slot=source.slots[i];
       if (!item["c"].isNull()) slot.color=color(item["c"]);
       if (!item["b"].isNull()) slot.brightness=constrain(item["b"].as<float>(),0.f,1.f)*255;
       if (!item["e"].isNull()) slot.effect=item["e"].as<uint8_t>();
       if (!item["s"].isNull()) slot.speed=constrain(item["s"].as<float>(),0.f,1.f)*255;
     }
-    ++lightRequests; hostSeen=true; response["result"]=nullptr;
+    ++lightRequests; source.seen=true; response["result"]=nullptr;
   } else if (!strcmp(method,"v.oai.rgbcfg")) {
-    auto next=model.hostLights;
-    bool keys=keysReceived,ambient=ambientReceived;
+    auto next=source.lights;
+    bool keys=source.keysReceived,ambient=source.ambientReceived;
     if (readRgb(req["params"],next,keys,ambient)) {
-      model.hostLights=next; keysReceived=keys; ambientReceived=ambient;
-      ++rgbRequests; hostSeen=true; response["result"]=nullptr;
+      source.lights=next; source.keysReceived=keys; source.ambientReceived=ambient;
+      ++rgbRequests; source.seen=true; response["result"]=nullptr;
     } else {
       ++stateErrors; response["error"]["code"]=-32602;
       response["error"]["message"]="Invalid RGB state";
@@ -338,24 +373,59 @@ void process() {
   } else {
     response["error"]["code"]=-32601; response["error"]["message"]="Method not found";
   }
-  ++model.rpc_count;
-  if (!req["id"].isNull()) { String out; serializeJson(response,out); transmit(out); }
+  ++source.rpcCount; ++model.rpc_count;
+  if (!req["id"].isNull()) { String out; serializeJson(response,out); transmit(source,out); }
 }
-void reset() { jsonLen=0; depth=0; inString=false; escaped=false; }
-void receive(uint8_t ch) {
-  if (!jsonLen && ch!='{') return;
-  if (jsonLen>=sizeof(json)-1) { ++parseErrors; reset(); return; }
-  json[jsonLen++]=ch;
-  if (inString) {
-    if (escaped) escaped=false;
-    else if (ch=='\\') escaped=true;
-    else if (ch=='"') inString=false;
-  } else {
-    if (ch=='"') inString=true;
-    else if (ch=='{' || ch=='[') ++depth;
-    else if (ch=='}' || ch==']') --depth;
+void reset(Channel& source) {
+  source.assembler.reset();
+}
+void receive(Channel& source,uint8_t ch) {
+  const auto result=source.assembler.feed(ch);
+  if (result==MicroTransport::Assembly::Overflow) ++parseErrors;
+  else if (result==MicroTransport::Assembly::Complete) { process(source); reset(source); }
+}
+void clearReceipts() {
+  actionReceipts.reset();
+  for (unsigned i=0;i<7;++i) {
+    model.actionFeedbackAt[i]=0; model.actionFeedbackSent[i]=false;
   }
-  if (!depth) { json[jsonLen]=0; process(); reset(); }
+}
+void updateConnection(Channel& source,bool connected,uint32_t session) {
+  if (source.connected && (!connected || source.session!=session)) {
+    source.outgoing.disconnect(); reset(source);
+    source.seen=false; source.keysReceived=source.ambientReceived=false;
+    source.lights={};
+    for (auto& slot:source.slots) slot={};
+    if (selection.active()!=Link::None && &source==&channel(selection.active())) {
+      clearReceipts(); titlesReceived=configReceived=chatReceived=false;
+      model.hostChat={}; model.hostConfig.fresh=false;
+    }
+  }
+  source.connected=connected; source.session=session;
+}
+void selectTransport(bool mounted) {
+  if (blockedBleSession && (!bleStatus.connected || bleStatus.session!=blockedBleSessionId))
+    blockedBleSession=false;
+  const bool bleConnected=bleStatus.connected && !blockedBleSession;
+  updateConnection(usbChannel,mounted,usbSession);
+  updateConnection(bleChannel,bleConnected,bleStatus.session);
+  const auto old=selection.active();
+  auto& oldQueue=channel(old).outgoing;
+  const bool cleanup=old!=Link::None && (oldQueue.heldKeys() || oldQueue.stickActive() || oldQueue.recoveryPending());
+  selection.update(mounted,bleConnected,cleanup,millis());
+  if (selection.beginCleanup()) oldQueue.cancelInputs();
+  if (selection.forceBleDisconnect()) {
+    // Only a stalled release forces disconnection. Normal USB insertion keeps
+    // the shared BLE HID/metadata connection and its bonding intact.
+    blockedBleSession=true; blockedBleSessionId=bleStatus.session;
+    updateConnection(bleChannel,false,bleStatus.session);
+    if (bleEndpoint.disconnect) bleEndpoint.disconnect();
+  }
+  if (selection.changed()) {
+    clearReceipts();
+    titlesReceived=configReceived=chatReceived=false;
+    model.hostChat={}; model.hostConfig.fresh=false;
+  }
 }
 }
 
@@ -377,47 +447,84 @@ extern "C" bool tab5_hid_raw_report(uint8_t instance,uint8_t id,uint8_t type,
 }
 
 namespace MicroLink {
-void begin() { frames=xQueueCreate(64,sizeof(Frame)); hid.begin(); }
+void attachBle(const BleEndpoint& endpoint) { bleEndpoint=endpoint; }
+static bool usbDiagnosticPaused=false;
+void setUsbDiagnosticPaused(bool paused) { usbDiagnosticPaused=paused; }
+void receiveBleReport(uint8_t id,const uint8_t* data,size_t length,uint32_t session,bool feature) {
+  portENTER_CRITICAL(&rxLock);
+  if (feature) ++rx.bleFeature; else ++rx.bleOutput;
+  portEXIT_CRITICAL(&rxLock);
+  if (length>UINT16_MAX) { rejectFrame(&RxDiagnostics::rejectSize); return; }
+  queueFrame(id,data,uint16_t(length),Link::Bluetooth,session);
+}
+void begin() {
+  usbFrames=xQueueCreate(64,sizeof(Frame)); bleFrames=xQueueCreate(64,sizeof(Frame)); hid.begin();
+}
 void poll() {
-  const bool mounted=tud_mounted();
-  if (!mounted) {
-    if (usbWasMounted) {
-      outgoing.disconnect();
-      if (frames) xQueueReset(frames);
-      actionReceipts.reset();
-      for (int i=0;i<7;++i) {
-        model.actionFeedbackAt[i]=0; model.actionFeedbackSent[i]=false;
-      }
-    }
-    hostSeen=false; reset(); keysReceived=ambientReceived=false; titlesReceived=false;
-    configReceived=chatReceived=false;
-    model.hostChat={};
-    model.hostLights={};
+  const bool mounted=tud_mounted() && !usbDiagnosticPaused;
+  if (usbWasMounted && !mounted) {
+    portENTER_CRITICAL(&rxLock); ++usbSession; portEXIT_CRITICAL(&rxLock);
   }
   usbWasMounted=mounted;
-  if (jsonLen && millis()-rxAt>2000) reset();
+  bleStatus=bleEndpoint.status ? bleEndpoint.status() : BleStatus{};
+  selectTransport(mounted);
+  selectedGeneration.update(selection.active(),channel(selection.active()).session);
+  for (auto* source:{&usbChannel,&bleChannel})
+    if (source->assembler.size() && millis()-source->rxAt>2000) reset(*source);
   Frame f;
   // Bound work even while the desktop floods state updates. Responses are
   // queued, so receiving a request never waits for an IN endpoint to drain.
-  unsigned budget=4;
-  while (mounted && budget-- && frames && xQueueReceive(frames,&f,0)==pdTRUE) {
-    rxAt=millis(); for (int i=0;i<f.data[1];++i) receive(f.data[i+2]);
+  // Separate inboxes prevent an idle/overactive BLE peer from consuming the
+  // USB endpoint's RX capacity. Each endpoint gets two reports per poll.
+  for (const auto inbox:{usbFrames,bleFrames}) {
+    unsigned budget=2;
+    while (budget-- && inbox && xQueueReceive(inbox,&f,0)==pdTRUE) {
+      auto& source=channel(f.link);
+      if (!source.connected || source.session!=f.session) {
+        portENTER_CRITICAL(&rxLock); ++rx.staleSession; portEXIT_CRITICAL(&rxLock);
+        continue;
+      }
+      source.rxAt=millis();
+      for (int i=0;i<f.data[1];++i) receive(source,f.data[i+2]);
+    }
   }
+  const bool connected=selection.active()!=Link::None;
+  const auto& active=channel(selection.active());
+  hostSeen=connected && active.seen; nativeRxAt=active.nativeRxAt;
+  if (connected) {
+    for (unsigned i=0;i<6;++i) {
+      const auto& slot=active.slots[i];
+      model.slots[i].color=slot.color; model.slots[i].brightness=slot.brightness;
+      model.slots[i].effect=slot.effect; model.slots[i].speed=slot.speed;
+    }
+    model.hostLights=active.lights;
+  } else model.hostLights={};
   model.usbMounted=mounted;
-  model.nativeSessionSeen=mounted && hostSeen;
+  model.bleAvailable=bleStatus.available; model.bleEnabled=bleStatus.enabled;
+  model.bleConnected=bleStatus.connected; model.blePairing=bleStatus.pairing;
+  model.bleReady=bleStatus.ready && !blockedBleSession; model.bleBonded=bleStatus.bonded;
+  model.blePasskeyValid=bleStatus.passkeyValid; model.blePasskey=bleStatus.passkey;
+  memcpy(model.bleDeviceName,bleStatus.deviceName,sizeof(model.bleDeviceName));
+  memcpy(model.bleError,bleStatus.error,sizeof(model.bleError));
+  model.bleDeviceName[sizeof(model.bleDeviceName)-1]=0; model.bleError[sizeof(model.bleError)-1]=0;
+  model.activeTransport=selection.active()==Link::Usb ? MicroUI::Transport::Usb
+      : selection.active()==Link::Bluetooth ? MicroUI::Transport::Bluetooth : MicroUI::Transport::None;
+  model.nativeSessionSeen=connected && hostSeen;
   model.connected=model.nativeSessionSeen;
-  model.titlesFresh=mounted && titlesReceived && millis()-titlesAt<=7500;
-  model.hostConfig.fresh=configReceived && mounted && millis()-configAt<=7500;
-  model.hostChat.fresh=chatReceived && mounted && millis()-configAt<=7500;
+  model.titlesFresh=connected && titlesReceived && millis()-titlesAt<=7500;
+  model.hostConfig.fresh=configReceived && connected && millis()-configAt<=7500;
+  model.hostChat.fresh=chatReceived && connected && millis()-configAt<=7500;
   model.metadataFresh=model.hostConfig.fresh || model.hostChat.fresh;
-  serviceTransmit();
+  serviceTransmit(Link::Usb); serviceTransmit(Link::Bluetooth);
   flushDiagnosticLines();
   if (diagnosticsDeferred && !diagnosticFrameActive && !deferredLines.size()) {
     diagnosticsDeferred=false; diagnostics();
   }
 }
+uint32_t transportGeneration() { return selectedGeneration.value(); }
+bool transportSwitching() { return selection.switching(); }
 void send(const MicroUI::Event &event) {
-  if (!model.connected && !inputsSuppressed()) { actionFeedback(event,false); return; }
+  if ((!model.connected || selection.switching()) && !inputsSuppressed()) { actionFeedback(event,false); return; }
   JsonDocument doc;
   MicroTransport::Tag tag;
   if (event.joystick) {
@@ -440,15 +547,35 @@ void send(const MicroUI::Event &event) {
     const int index=actionIndex(event);
     if (index>=0 && event.action==1)
       showReceipt(index,actionReceipts.begin(uint8_t(index+6)));
-    if (!transmit(out,tag)) actionFeedback(event,false);
+    if (!transmit(channel(selection.active()),out,tag)) actionFeedback(event,false);
   }
 }
 void captureInputs(bool enabled) {
-  captureInput=enabled; outgoing.suspendInputs(inputsSuppressed());
+  captureInput=enabled;
+  usbChannel.outgoing.suspendInputs(inputsSuppressed()); bleChannel.outgoing.suspendInputs(inputsSuppressed());
 }
+bool sendBleDiagnostic(const MicroUI::Event& event,uint32_t expectedSession) {
+  const auto current=bleEndpoint.status ? bleEndpoint.status() : BleStatus{};
+  if (selection.active()!=Link::Bluetooth || selection.switching()
+      || inputsSuppressed() || !model.connected || !current.connected || !current.ready
+      || current.session!=expectedSession || !bleChannel.connected
+      || bleChannel.session!=expectedSession) return false;
+  const auto& stats=bleChannel.outgoing.stats();
+  const uint32_t before=stats.queued+stats.coalesced;
+  send(event);
+  return stats.queued+stats.coalesced!=before;
+}
+void cancelBleDiagnostic(uint32_t expectedSession) {
+  const auto current=bleEndpoint.status ? bleEndpoint.status() : BleStatus{};
+  if (!current.connected || current.session!=expectedSession
+      || !bleChannel.connected || bleChannel.session!=expectedSession) return;
+  bleChannel.outgoing.cancelInputs();
+}
+bool bleDiagnosticIdle() { return bleChannel.outgoing.nativeIdle(); }
 bool capturingInputs() { return inputsSuppressed(); }
 void setDiagnosticFrameActive(bool active) {
-  diagnosticFrameActive=active; outgoing.suspendInputs(inputsSuppressed());
+  diagnosticFrameActive=active;
+  usbChannel.outgoing.suspendInputs(inputsSuppressed()); bleChannel.outgoing.suspendInputs(inputsSuppressed());
 }
 bool diagnosticTextPending() { return deferredLines.size()!=0; }
 bool previewLights(const char *payload) {
@@ -492,7 +619,7 @@ void recordInputInterval(uint32_t microseconds) {
   metrics.inputMax=std::max(metrics.inputMax,microseconds); ++metrics.inputs;
 }
 void resetMetrics() { metrics=Metrics{}; MicroUI::resetRenderProfile(); }
-bool applyTitles(const char *payload) {
+bool applyTitles(const char *payload,bool usbAck) {
   JsonDocument doc;
   if (deserializeJson(doc,payload) || doc["v"].as<int>()!=1
       || !doc["seq"].is<uint32_t>() || !doc["slots"].is<JsonArray>()) return false;
@@ -524,23 +651,23 @@ bool applyTitles(const char *payload) {
       if (uint8_t(next.slots[i].title[n])<32) next.slots[i].title[n]=' ';
     strlcpy(next.slots[i].identity,key,sizeof(next.slots[i].identity));
   }
-  next.titlesFresh=available && tud_mounted();
+  next.titlesFresh=available && selection.active()!=Link::None;
   model=next; titlesReceived=available; titlesAt=millis();
-  diagnosticLine(String("TITLES_OK ")+String(doc["seq"].as<uint32_t>()));
+  if (usbAck) diagnosticLine(String("TITLES_OK ")+String(doc["seq"].as<uint32_t>()));
   return true;
 }
-bool applyHostConfig(const char *payload) {
+bool applyHostConfig(const char *payload,bool usbAck) {
   JsonDocument doc;
   HostFeedback::Config next;
   HostFeedback::Chat nextChat;
   bool available=false,chatAvailable=false;
   if (deserializeJson(doc,payload) || !readConfig(doc,next,available)
       || !readChat(doc,nextChat,chatAvailable)) return false;
-  next.fresh=available && tud_mounted();
-  nextChat.fresh=chatAvailable && tud_mounted();
+  next.fresh=available && selection.active()!=Link::None;
+  nextChat.fresh=chatAvailable && selection.active()!=Link::None;
   model.hostConfig=next; configReceived=available; configAt=millis();
   model.hostChat=nextChat; chatReceived=chatAvailable;
-  diagnosticLine(String("HOST_CONFIG_OK ")+String(doc["seq"].as<uint32_t>()));
+  if (usbAck) diagnosticLine(String("HOST_CONFIG_OK ")+String(doc["seq"].as<uint32_t>()));
   return true;
 }
 bool previewHostState(const char *payload) {
@@ -574,7 +701,7 @@ void diagnostics() {
   if (diagnosticFrameActive || deferredLines.size()) { diagnosticsDeferred=true; return; }
   RxDiagnostics snapshot;
   portENTER_CRITICAL(&rxLock); snapshot=rx; portEXIT_CRITICAL(&rxLock);
-  JsonDocument d; d["firmware"]="tab5-micro-0.11.1"; d["usb_ready"]=hid.ready(); d["usb_mounted"]=tud_mounted();
+  JsonDocument d; d["firmware"]="tab5-micro-0.12.0"; d["usb_ready"]=hid.ready(); d["usb_mounted"]=tud_mounted();
   d["theme"]=MicroUI::theme()==MicroUI::Theme::Dark ? "dark" : "light";
   d["language"]=UiLocale::english() ? "en" : "zh";
   d["uptime_ms"]=millis();
@@ -609,6 +736,21 @@ void diagnostics() {
   d["native_rx_age_ms"]=hostSeen ? int32_t(millis()-nativeRxAt) : -1;
   d["native_liveness"]="not-observable; event-only protocol";
   d["metadata_fresh"]=model.metadataFresh;
+  d["active_transport"]=selection.active()==Link::Usb ? "usb"
+      : selection.active()==Link::Bluetooth ? "bluetooth" : "none";
+  d["transport_switching"]=selection.switching();
+  d["transport_generation"]=selectedGeneration.value();
+  auto bt=d["bluetooth"].to<JsonObject>();
+  bt["available"]=bleStatus.available; bt["enabled"]=bleStatus.enabled;
+  bt["connected"]=bleStatus.connected; bt["ready"]=bleStatus.ready && !blockedBleSession;
+  bt["authenticated"]=bleStatus.authenticated;
+  bt["pairing"]=bleStatus.pairing; bt["bonded"]=bleStatus.bonded;
+  bt["passkey_valid"]=bleStatus.passkeyValid;
+  bt["name"]=model.bleDeviceName; bt["error"]=model.bleError;
+  bt["session"]=bleStatus.session; bt["native_session_seen"]=bleChannel.seen;
+  bt["inputs_submitted"]=bleChannel.inputsSubmitted;
+  bt["output_reports"]=snapshot.bleOutput; bt["feature_reports"]=snapshot.bleFeature;
+  d["stale_session_reports"]=snapshot.staleSession;
   d["rgb_requests"]=rgbRequests; d["state_errors"]=stateErrors;
   const auto& displayState=state();
   d["host_feedback"]["config_fresh"]=displayState.hostConfig.fresh;
@@ -616,6 +758,7 @@ void diagnostics() {
   d["host_feedback"]["default_tier"]=uint8_t(displayState.hostConfig.defaultTier);
   d["host_feedback"]["encoder"]=uint8_t(displayState.hostConfig.encoder);
   d["host_feedback"]["voice"]=uint8_t(displayState.hostConfig.voice);
+  d["host_feedback"]["joystick_up"]=displayState.hostConfig.joystickUpPlan ? "plan" : "unknown";
   const auto& chat=displayState.hostChat;
   d["host_feedback"]["chat"]["fresh"]=chat.fresh;
   d["host_feedback"]["chat"]["source"]=chat.source==HostFeedback::ChatSource::DesktopIpc ? "desktop-ipc" : "unavailable";
@@ -642,17 +785,20 @@ void diagnostics() {
   d["diagnostic_frame_active"]=diagnosticFrameActive;
   d["diagnostic_lines_pending"]=deferredLines.size();
   d["diagnostic_lines_dropped"]=deferredLines.dropped();
-  const auto& tx=outgoing.stats();
-  auto txStatus=d["hid_tx"].to<JsonObject>();
-  txStatus["receipt"]="usb-submitted; desktop execution unconfirmed";
-  txStatus["pending"]=outgoing.size(); txStatus["held_keys"]=outgoing.heldKeys();
-  txStatus["stick_active"]=outgoing.stickActive();
-  txStatus["recovery_pending"]=outgoing.recoveryPending();
-  txStatus["queued"]=tx.queued; txStatus["submitted"]=tx.submitted;
-  txStatus["reports"]=tx.reports; txStatus["failed"]=tx.failed;
-  txStatus["coalesced"]=tx.coalesced; txStatus["dropped"]=tx.dropped;
-  txStatus["stale"]=tx.stale; txStatus["recoveries"]=tx.recoveries;
-  txStatus["disconnects"]=tx.disconnects;
+  const auto txDiagnostics=[](JsonObject entry,const MicroTransport::Queue& queue) {
+    const auto& tx=queue.stats();
+    entry["receipt"]="transport-submitted; desktop execution unconfirmed";
+    entry["pending"]=queue.size(); entry["held_keys"]=queue.heldKeys();
+    entry["stick_active"]=queue.stickActive(); entry["recovery_pending"]=queue.recoveryPending();
+    entry["queued"]=tx.queued; entry["submitted"]=tx.submitted;
+    entry["reports"]=tx.reports; entry["failed"]=tx.failed;
+    entry["coalesced"]=tx.coalesced; entry["dropped"]=tx.dropped;
+    entry["stale"]=tx.stale; entry["recoveries"]=tx.recoveries;
+    entry["disconnects"]=tx.disconnects;
+  };
+  txDiagnostics(d["hid_tx"].to<JsonObject>(),channel(selection.active()).outgoing);
+  txDiagnostics(d["usb_tx"].to<JsonObject>(),usbChannel.outgoing);
+  txDiagnostics(d["ble_tx"].to<JsonObject>(),bleChannel.outgoing);
   d["lighting_preview"]=lightingPreview; d["effects_frozen"]=MicroUI::effectsAreFrozen();
   d["titles_fresh"]=model.titlesFresh;
   int titleCount=0; for (const auto &slot:model.slots) if (*slot.title) ++titleCount;

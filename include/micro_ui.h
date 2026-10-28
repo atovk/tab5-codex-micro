@@ -6,6 +6,7 @@
 namespace MicroUI {
 
 enum class Theme : uint8_t { Light, Dark };
+enum class Transport : uint8_t { None, Usb, Bluetooth };
 
 struct Slot {
   uint32_t color = 0;
@@ -20,6 +21,11 @@ struct State {
   Slot slots[6];
   bool connected = false;
   bool usbMounted = false;
+  bool bleAvailable=false, bleEnabled=false, bleConnected=false, blePairing=false, bleReady=false;
+  bool bleBonded=false, blePasskeyValid=false;
+  uint32_t blePasskey=0;
+  char bleDeviceName[40]={}, bleError[96]={};
+  Transport activeTransport=Transport::None;
   // Native protocol traffic was observed during this USB mount. This is not
   // an application heartbeat: an idle desktop need not send lighting changes.
   bool nativeSessionSeen = false;
@@ -66,6 +72,8 @@ void clearTitleScrollTest();
 
 bool init();
 bool render(const State& state);
+// Diagnostic evidence for the retained framebuffer; never the mutable model.
+const State& renderedState();
 // Present the complete retained scene again after display orientation changes.
 void invalidateDisplay();
 Event touch(int16_t x, int16_t y, bool pressed);

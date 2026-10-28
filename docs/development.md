@@ -4,7 +4,7 @@
 
 本页说明项目结构、协议边界和验证方法，并保留主要版本的实现记录。安装和日常使用见 [README](../README.md)。所有测试截图、串口记录和构建产物默认写入本地忽略的 `artifacts/`；公开仓库不包含个人聊天元数据或设备备份。
 
-以下实现说明对应 0.11.1；预编译固件、字库和中英文刷机说明见 [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1)。各节验证结果仅适用于标明的版本与具体测试用例。
+当前源码包含尚未发布的 **0.12.0 USB／BLE 双模实现，实机验证仍在进行**。预编译 USB 固件、字库和中英文刷机说明仍为 [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1)。历史验证结果仅适用于标明的版本与具体测试用例，不证明蓝牙已经通过。使用步骤见 [蓝牙连接说明](BLUETOOTH.md)。
 
 ## 项目结构
 
@@ -13,6 +13,9 @@
 | `src/micro_ui.cpp` | 双主题控制台、设置页、标题滚动和局部重绘 |
 | `src/micro_controls.cpp` | 旋钮、摇杆与按键的触摸事件 |
 | `src/micro_link.cpp` | 原生 Micro HID、本地元数据和诊断接口 |
+| `src/micro_ble.cpp`、`include/ble_pairing_policy.h` | C6 BLE HID、加密 GATT、PIN 配对窗口与绑定策略 |
+| `src/ble_ecc_compat.c`、`tools/ble_ecc_patch.py`、`tools/ble_security_patch.py` | 固定 SDK 的 ECC 兼容修复与本地 NimBLE 认证、HID Report 补丁 |
+| `include/micro_connection.h` | USB／BLE 会话隔离、输入通道选择及切换释放 |
 | `src/micro_games.cpp` | 三款本地触摸游戏 |
 | `src/micro_sound.cpp` | 音效队列和 I2S 播放 |
 | `src/micro_orientation.cpp` | IMU 横屏方向和触摸坐标同步 |
@@ -21,14 +24,16 @@
 | `src/title_renderer.cpp` | 字形遮罩缓存与标题滚动合成 |
 | `include/title_layout.h` | 不分配内存的 UTF-8 换行逻辑 |
 | `include/title_scroll.h` | 停留、移动、暂停和恢复的时钟逻辑 |
-| `include/micro_transport.h` | 有界 HID 发送队列、同一 USB 会话内的释放与归中恢复 |
+| `include/micro_transport.h` | 有界 HID 发送队列、同一传输会话内的释放与归中恢复 |
 | `src/render_service.cpp`、`include/render_service.h` | 绘制期间协作处理触摸与 USB 的检查点 |
 | `include/game_lifecycle.h` | 游戏可见性、离开时暂停与显式恢复 |
-| `tools/title_sync.py` | 显式 Agent 绑定、配置和聊天状态串口同步 |
+| `tools/title_sync.py` | 显式 Agent 绑定、配置和聊天状态的 USB／BLE 同步 |
+| `tools/tab5_ble.py`、`tools/tab5_metadata.py` | 持久 BLE 元数据流、P4 身份校验、USB 优先和跨进程连接锁 |
 | `tools/chat_state_bridge.py` | 指定聊天的桌面实时状态订阅 |
 | `tools/desktop_sync.py`、`tools/chat_sync.py` | 严格配置解析与桥接元数据验证 |
 | `tools/verify_transition_performance.py` | 完整页面切换和新标题缓存构建的隔离性能检查 |
 | `tools/verify_screenshot_stream.py` | 截图二进制帧跨越捕获 watchdog 时的完整性与清理检查 |
+| `tools/verify_ble_native.py` | 显式启用的原生 BLE 诊断，分别核对排队、传输和桌面状态变化 |
 | `tests/` | Python 和纯 C++ 逻辑回归 |
 
 ## 预编译发布包
@@ -52,6 +57,41 @@ Tab5 的 USB-C 使用 ESP32-P4 full-speed PHY0（GPIO24/25）。`tools/usb_fs_pa
 CDC 在 USB 身份确定后显式启动，接收缓冲为 8192 字节。主循环每次最多解析 256 字节，避免较长元数据行挤占触摸处理。同步、截图和刷机共享串口锁；诊断工具只选择应用 VID/PID 和有效的 Tab5 应用序列号，不回退到任意 Espressif ROM 设备。
 
 `partitions.csv` 面向 16MB Flash，包含 5MB factory 应用分区。动态标题字体独立放在 `0x510000`。首次安装或修改分区时刷入 factory 镜像；普通应用更新可以保留字体。
+
+## 0.12.0 蓝牙实现与验证边界
+
+P4 运行 UI 与原生协议，板载 C6 通过 ESP-Hosted／SDIO 提供 BLE 控制器。无线初始化在独立 worker 中进行，失败时保留 USB。C6 可用、广播可见和 MTU 协商完成都不表示已配对；还需完成 PIN、绑定、加密与认证。首次使用应先解锁 macOS，在系统蓝牙设置中完成配对，再让 companion 继续同步。
+
+BLE 暴露 HID 服务 `0x1812`，使用厂商 usage page `0xFF00`、原生 report ID 6 和 63 字节 report payload；Device Information 的 PnP ID 对应 `0x303A:0x8360`。相同 VID/PID 只是识别条件之一，不能独立证明桌面动作已执行。USB 和 BLE 的接收组包、发送队列及会话号分别维护，避免拼接或跨连接重放。
+
+输入只发往一个选中的连接，USB 挂载优先。切换前给旧连接有限时间发送释放／归中，必要时断开无法清理的旧蓝牙会话；剩余手势不会在新连接上继续。正常接回 USB 保留 BLE 绑定及连接。设备上的 **USB／BLE submitted** 仅表示传输栈接受，不是桌面执行回执。
+
+配对采用显示六位随机 PIN、加密、MITM 认证与绑定。新身份只能在用户开启的 120 秒窗口内完成配对；已绑定身份可自动重连。认证完成时再次核对窗口和连接会话，过期握手不能获得新绑定；替换既有绑定也需要配对窗口。连接页提供蓝牙开关、开始配对和带确认的清除绑定。
+
+固定 SDK 的 ECC 兼容修复仅将 `uECC_shared_secret` 路由到 SDK 的 mbedTLS ECDH 接口，保留 TinyCrypt 密钥生成及 Secure Connections。构建前核对 SDK 身份与 `libbt.a` SHA-256，变化时停止构建；P4 启动自测使用 RFC 5903 P-256 已知答案。NimBLE 连接处理保留早于 `CONNECT` 到达的 `ENC_CHANGE` 与 CCCD 状态；本地 `BLEService` 补丁避免按 UUID 去重丢失 HID Report，保留五个 Report 特征及只读 `0x2908` 描述符，并用标准 Service Changed 通知已绑定主机更新 GATT。
+
+### 独立元数据 GATT
+
+以下 UUID 共享尾部 `-7d4b-4b58-9e53-5e4ad07e7a50`：
+
+| UUID 前段 | 用途 |
+| --- | --- |
+| `8f4d1000` | 元数据服务 |
+| `8f4d1001` | RX，带应答写入，认证加密后接收行片段 |
+| `8f4d1002` | TX，认证加密后通知，可按 MTU 拆分应答 |
+| `8f4d1003` | Identity，认证加密读取 |
+
+Identity 为 `{"v":1,"serial":"TAB5-0123456789AB","maxLine":6144,"firmware":"tab5-micro-0.12.0"}`；串号为示例，实际必须对应 **P4 USB 芯片身份**。`firmware` 仅供诊断，桥接不要求其字符串排它匹配。广播厂商数据 `0x303A` 后的六字节 P4 MAC 只用于候选筛选，连接后仍需检查 Identity 协议字段及公开串号。
+
+本项目真实固件强制 Identity、RX、TX 使用加密且经过 MITM 认证的链路，首次绑定要求系统 PIN 配对。主机端公开串号匹配没有提供应用层密码学设备认证，不能阻止复制 UUID／广播串号并明文回应 GATT 的主动仿冒外设骗取元数据；该威胁当前未处理。实机加密与配对结果适用于本固件，不是 companion 已排除克隆的证据。详见 [设备身份边界](BLUETOOTH.md#设备身份边界)。
+
+RX 仅允许 `TITLES <json>\n` 与 `HOST_CONFIG <json>\n`，不接受按键、截图、刷机等诊断命令。桌面按 ATT MTU 分片，设备按换行组包，成功应答为 `TITLES_OK <seq>`／`HOST_CONFIG_OK <seq>`。`0x18` 单字节无应答地清空未完成行，避免写入超时后补一个换行意外执行旧状态。消息与应答绑定当前 BLE 会话，断线后不迁移旧数据。
+
+只有 `title_sync.py` 连接设备；`chat_state_bridge.py` 继续只写缓存。前者持有独立跨进程 BLE owner 锁并保留 GATT 连接，避免第二个进程抢连或关闭原生 HID 共用的连接。auto 优先同一串号的 USB，USB 锁忙时跳过，正常 USB 接回不主动断开 GATT。重新连接后及每个数据包发送前重读源数据，不缓存待重放的聊天快照。
+
+macOS 使用 Bleak 3.0.1 与 CoreBluetooth。扫描合并公开 API `retrieveConnectedPeripheralsWithServices` 返回的外设，覆盖系统 HID 已连接、外设停止广播的情况。BLEDevice 的 `(peripheral, manager)` 适配依赖固定版本后端，升级 Bleak 时需复核该契约。未知身份只接受唯一候选，禁止按名称、RSSI 或 C6 MAC 猜选。建立链路的预算为 15 秒；读取加密 Identity 的预算单独为 60 秒，认证等待不占用 USB 串口锁。这不会延长 SMP 事务约 30 秒的超时；macOS 的 PIN 提示可能来自独立 BluetoothUIServer 对话框，应解锁电脑并及时输入。
+
+相关合成测试覆盖身份校验、MTU 分片、通知组包、写入中断、重连不重放、USB 优先、owner 锁、缓存刷新和 PIN 窗口策略。合成测试不替代实机证据；已确认的配对、Fast／Plan 桌面执行、元数据与自动回退，以及仍待验收的项目，分别记录在下方 0.12.0 验证摘要中。
 
 ## 输入契约
 
@@ -78,9 +118,11 @@ CDC 在 USB 身份确定后显式启动，接收缓冲为 8192 字节。主循�
 
 标题 companion 只解析明确的本地 Custom assignments，再按 ID 读取所需标题；不从最近访问时间猜测槽位。收到的标题最多 191 个 UTF-8 字节，截断只发生在完整字符边界。`TITLES` 和 `HOST_CONFIG` 使用独立应答，同一批次共享 uint32 序号；任一应答失败不会阻止另一种元数据尝试发送，失败批次可重试。
 
-普通 watch 每秒检查一次数据变化，约两秒发送心跳。每种消息有独立 1.5 秒应答预算；读超时时保留部分应答行。设备在 7.5 秒没有有效更新或 USB 卸载时将元数据标记过期。
+`HOST_CONFIG` 的可选 `joystick_up` 仅允许 `unknown`／`plan`。只有完整有效的桌面 v1 布局中 Up 实际映射到 `composer.togglePlanMode` 才传 `plan`；布局省略 `analogStick` 时按已核对的桌面默认映射展开。自定义或无效映射、不可用的配置源，以及未携带此字段的旧包均为 `unknown`。该字段只是已读取的配置事实，不证明实时执行目标或动作已经执行，也不传输任何自定义命令文本。
 
-连接证据分层处理：`usb_mounted` 是当前 USB 挂载；`native_session_seen` 是本次 USB 会话曾收到原生主机消息，不是持续存活检测；标题、配置和聊天设置各自有新鲜度。页眉显示“USB已连接”和“最近”灯光，不能用最后的 RGB 值证明实时桌面状态。USB 卸载会使原生会话与元数据失效。
+普通 watch 每秒检查一次数据变化，约两秒发送心跳。每种消息有独立 1.5 秒应答预算；读超时时保留部分应答行。设备在 7.5 秒没有有效更新、活动连接失效或切换时将元数据标记过期。
+
+连接证据分层处理：`usb_mounted` 是当前 USB 挂载；`native_session_seen` 是当前选中传输会话曾收到原生主机消息，不是持续存活检测；标题、配置和聊天设置各自有新鲜度。页眉区分 USB／BLE 连接和“最近”灯光，不能用最后的 RGB 值证明实时桌面状态。连接失效或切换会清理相应会话与元数据。
 
 ### 指定聊天的真实设置
 
@@ -155,8 +197,8 @@ P4 SDK 的默认 USB 调试 PHY 管脚处理与音频 GPIO26/27 有冲突，因�
 .venv/bin/python tools/verify_audio_performance.py
 .venv/bin/python tools/verify_neon.py
 .venv/bin/python tools/verify_orientation.py
-.venv/bin/python tools/verify_transition_performance.py --firmware 0.11.1
-.venv/bin/python tools/verify_screenshot_stream.py --firmware 0.11.1
+.venv/bin/python tools/verify_transition_performance.py --firmware 0.12.0
+.venv/bin/python tools/verify_screenshot_stream.py --firmware 0.12.0
 ```
 
 这些触摸回归工具使用诊断捕获，阻止合成触摸事件触发电脑操作。清理代码会退出捕获、清除预览并恢复设置；方向验证可能需要手动摆放设备。
@@ -168,6 +210,12 @@ P4 SDK 的默认 USB 调试 PHY 管脚处理与音频 GPIO26/27 有冲突，因�
 `verify_screenshot_stream.py` 检查截图二进制流跨越 60 秒捕获 watchdog 时是否完整。它在冻结的合成预览和隔离按下状态下取得参考帧，再通过仅限捕获模式的 `SCREEN_TEST_SLOW` 让设备按 **28,000 B/s** 发送；主机始终连续读取，避免依赖主机串口缓存行为来制造设备背压。工具校验帧头、精确像素字节数、结束标记、与参考帧一致的内容，以及帧后延迟输出的释放事件和 `STATUS` 清理结果。
 
 `verify_host_feedback.py` 和 `verify_title_font.py` 的状态／标题是隔离的合成演示。`verify_chat_bridge.py` 会实际调整明确测试聊天的下一轮模式并恢复原值；运行前阅读 `--help`，使用专门的测试聊天。它验证状态回传，不能单独证明原生 HID 操作已经执行。
+
+`verify_ble_native.py` 默认只做本地预检，不打开 USB／BLE。显式 `--execute` 会检查映射、解锁状态、指定聊天缓存及操作者对活动目标的确认，再安排有限的原生事件并暂时断开 USB 数据接口。报告分别记录排队完成、同一 BLE 会话的发送增量、macOS 仅有 Bluetooth 设备的拓扑，以及指定聊天的真实状态变化与恢复；它不通过设置 IPC 制造预期变化。`transport_verified` 与 `desktop_execution_confirmed` 必须分别解读。旋钮的导航高亮执行以桌面该分支才生成的原生 ambient 反馈及配对采集的实机帧为证据，不能推断具体 DOM 焦点或控件身份。
+
+Fast／Plan 已使用严格时序检查再次通过：完整执行区间保持 BLE-only 且无异常，同一会话各准确提交四条预期原生消息；桌面变化必须来自 ARM 之后实际读取的目标缓存，并观察到中间状态与恢复，不能使用安排输入之前的缓存变化作为成功证据。
+
+旋钮灯效诊断由 USB 预先安排基线、顺转后、逆转后和恢复四帧，在 USB 数据接口断开后的同一认证 BLE 会话内保存帧缓冲及对应渲染状态，之后再取回。测试关闭预览与冻结，并对照 Agent 槽位状态，避免把模拟灯效、输入提交提示或后台运行色误认成桌面导航回传。每帧分成 113 段、每段不超过 16KiB 复制，持续服务输入并核对会话及 UI 状态；最终实机复测通过。
 
 常用 CDC 命令：
 
@@ -185,7 +233,44 @@ P4 SDK 的默认 USB 调试 PHY 管脚处理与音频 GPIO26/27 有冲突，因�
 
 截图传输期间 companion 暂时无法取得串口锁，所以传输后的元数据可能超过 TTL；这不改变 SCREEN 时已经复制的画面。需要验证实时状态时，应同时保存截图之前的新鲜 STATUS，传输后释放锁并等待 companion 更新。
 
-### 0.11.1 当前验证结果
+### 0.12.0 当前验证结果（开发中，未发布）
+
+最终全套 **337 项主机测试通过（49.060 秒）**；最终 PlatformIO 构建成功（37.87 秒），app-only 刷入后确认同一 Tab5 返回准确的 0.12.0 版本，并保留绑定、偏好与字库。以下为当前设备与 macOS 桌面版本上的分项证据，不代表所有映射、主机或恢复场景通过。
+
+| 项目 | 已观察结果与边界 |
+| --- | --- |
+| 配对与重启 | P4 RFC 5903 自测通过，真实六位 PIN 配对及 NVS 绑定、加密、认证成功；多次 app-only 更新重启无需 PIN 恢复，并收到元数据应答 |
+| 原生 HID 握手 | macOS 订阅 HID 并达到 ready；桌面收到 BLE `device.status`／`rgbcfg` 应答，设备观察到原生会话 |
+| Fast | USB 数据接口断开、系统仅列出 Bluetooth 时，指定聊天真实状态完成 Fast → Standard → Fast；传输与桌面执行均确认 |
+| Plan | 相同 BLE-only 条件下，指定聊天真实状态完成 Default → Plan → Default；传输与桌面执行均确认 |
+| 旋钮导航高亮 | 纯 BLE、同一认证会话下，顺／逆转分别触发桌面可见且启用的输入区控件导航选中分支，并返回蓝色 `#304FFE`、effect 2（snake）ambient 反馈；确认该导航高亮执行，不确认具体 DOM `activeElement`、控件名称或两个不同目标 |
+| 灯效四帧 | 基线关闭 → 顺转蓝色 → 逆转再次蓝色 → 恢复关闭；同次渲染状态与帧缓冲颜色符合 RGB565 量化。预览／冻结均关闭，Agent 槽位状态不变，排除后台运行色混淆 |
+| 运行追光 | 四帧中的运行槽位外沿像素发生变化，霓虹帧计数持续增长，确认动画实际绘制；琥珀／红／绿等其他映射仍未实测 |
+| 元数据压力 | 20 轮新七标题与 20 轮相同内容，每轮各发送 `TITLES`、`HOST_CONFIG`，共 80／80 正确序号 ACK；解析、状态、丢弃及 ACK 错误均为零 |
+| 压力测试性能 | 新内容最大输入服务间隔 10,178µs、最大完整绘制 280,275µs，共 40 次绘制；相同内容最大输入间隔 4,000µs、绘制增量为零；观察窗口内可用堆变化为零 |
+| 压力测试清理 | 原元数据、偏好和捕获状态均恢复，清理错误为零 |
+| companion 自动切换 | 同一个生产 `--watch --transport auto` 进程完成 USB→BLE→USB，三阶段均有两类元数据的严格序号 ACK；USB 离线约 7 秒后首次 BLE 成功，无需 PIN。USB 回归后 BLE 会话仍就绪，元数据、配置和聊天状态新鲜，未重放输入 |
+| 正式登录后台服务 | 独立安装的 auto 服务在 USB 数据接口暂离 30 秒、系统仅有 BLE 时自动恢复通知，设备收到 20 条元数据命令，通知失败为零、BLE 会话保持；USB 回归后标题／配置／聊天状态均新鲜 |
+| 蓝牙开关重连 | Tab5 蓝牙关闭三秒再开启，原生 HID 约 1.5 秒后在新会话恢复，已加密、认证及绑定，无需 PIN；同一个 auto 进程随后恢复新会话 GATT，两类元数据持续 90 秒收到严格序号 ACK，再切回 USB |
+| 切换后的清理 | 原生输入计数保持 10，未重放；USB／BLE 队列均为空，无持有按键、摇杆偏移或释放恢复待办，失败／丢弃／过期及解析／状态错误均为零；标题、配置和聊天状态均新鲜 |
+| 尚未确认 | 具体 DOM 焦点和控件身份、琥珀／红／绿等其他灯色映射、其他未覆盖映射、物理断电与电池续航、电脑 Bluetooth 开关／长期休眠，以及持键跨断电 |
+
+这些输入间隔和堆变化是有限样本，不是普遍性能上限或长期内存结论。Fast／Plan 有桌面状态变化证据；旋钮有导航选中分支回传和实机帧证据，但单一候选可能两次高亮同一控件。不能把这些结论扩展到只有 ACK 或发送计数的其他操作；界面上的 submitted 与 Target not verified 语义保持不变。
+
+最终四帧保持同一认证 BLE 会话与连接代次，预览／冻结均关闭，原生会话已被观察到。时间相对 ARM；复制总耗时与输入服务间隔是不同指标：
+
+| 帧 | ARM 后时间（ms） | ambient | 复制总耗时（µs） | 复制期间最大输入服务间隔（µs） | 霓虹帧计数 |
+| --- | ---: | --- | ---: | ---: | ---: |
+| 基线 | 6,011 | 关闭 | 57,061 | 1,117 | 291 |
+| 顺转后 | 16,508 | 蓝色 snake | 58,354 | 1,157 | 826 |
+| 逆转后 | 18,511 | 蓝色 snake | 57,546 | 1,157 | 918 |
+| 恢复 | 24,515 | 关闭 | 58,109 | 1,168 | 1,227 |
+
+页眉 ambient 中心像素依次为 `[198,203,214] → [49,81,255] → [49,81,255] → [198,203,214]`，蓝色符合原生 `#304FFE` 的 RGB565 量化。运行槽位外沿比较区域共 3,346 像素，后三帧相对基线分别变化 336／508／508 像素；槽位配置状态未变，配合霓虹帧计数确认追光运动。ARM 耗时 179µs，准备步骤最大 44µs。
+
+另以 `USB_PAUSE` 前立即执行的 `PERF_RESET` 开始独立测量，在 USB 恢复后读取第一份 `STATUS` 快照：整个 BLE 测试窗口最大输入采样间隔 **16,253µs**，最大绘制 **185,108µs**，后者包含切换重绘，不是输入阻塞时长。该窗口排除了预检阶段同步 `STATUS` JSON 输出；早先约 245ms 的统计混入了该诊断输出，不能与 16.253ms 当作同口径的前后改善比较。分块复制期间的持续输入服务由上表独立证明。
+
+### 0.11.1 历史验证结果（USB）
 
 - 全套 **233 项主机测试通过**，所有生成资产校验通过；最终 PlatformIO 编译成功，固件已刷入 Tab5。
 - 实机十组完整转场均通过 **50ms 输入服务间隔**门限，最大值为 **25,011µs**；0.11.0 的相同十组基线最大值为 **1,109,016µs**。这些测量覆盖主题、语言、设置、游戏页面和新标题缓存构建。
@@ -224,6 +309,7 @@ P4 SDK 的默认 USB 调试 PHY 管脚处理与音频 GPIO26/27 有冲突，因�
 
 | 版本 | 变化 |
 | --- | --- |
+| 0.12.0（开发中，未发布） | USB／BLE 原生协议、PIN 配对及重连、独立加密元数据 GATT；已分项验证 Fast／Plan 桌面执行、元数据压力与自动切换，范围见验证表 |
 | 0.11.1 | 跟踪设置与原生操作目标分离、连接证据分层、非阻塞 HID 与释放恢复、绘制协作采样、游戏离开即暂停、权限 patch 重同步及严格刷机校验 |
 | 0.11.0 | 中英界面与语言持久化、中英文文档、预编译发布包和免编译刷机工具 |
 | 0.10.2 | 两行标题、超长自动滚动、触摸暂停、字形遮罩缓存和滚动回归 |

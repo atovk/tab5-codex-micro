@@ -84,6 +84,8 @@ M5Canvas canvas(&M5.Display);
 bool ready = false;
 bool playMode = false;
 bool settingsMode = false;
+bool bluetoothPage = false, bluetoothForgetConfirm = false;
+bool previousBluetoothPage = false, previousBluetoothForgetConfirm = false;
 bool forceFullPresent = false;
 bool finger = false;
 int held = -1;
@@ -98,6 +100,10 @@ struct InputState {
   bool finger = false;
   bool playMode = false;
   bool settingsMode = false;
+  bool bluetoothPage = false;
+  bool bluetoothForgetConfirm = false;
+  bool bleAvailable = false, bleEnabled = false, bleReady = false;
+  bool blePairing = false, bleBonded = false;
   bool fullPresent = false;
   int16_t x = W / 2;
   int16_t y = H / 2;
@@ -111,7 +117,9 @@ struct InputState {
   uint32_t soundRevision = 0;
   uint8_t volume = 45;
   uint8_t brightness = 24;
-  uint8_t settingsControl = 0;  // 1: volume, 2: brightness, 3: mute, 4: blank, 5: language.
+  // 1..5: audio/display; 6: connections; 7: BLE toggle; 8: pair;
+  // 9: forget; 10: cancel forget; 11: confirm forget.
+  uint8_t settingsControl = 0;
   uint32_t settingsRevision = 0;
   bool effectsFrozen = false;
 };
@@ -560,7 +568,140 @@ void drawLanguageButton() {
       y + 35 + (pressed ? 2 : 0), INK, UiFont::sans24());
 }
 
-void drawSettings() {
+bool sameBluetooth(const State& a, const State& b) {
+  return a.bleAvailable == b.bleAvailable && a.bleEnabled == b.bleEnabled
+      && a.bleReady == b.bleReady && a.blePairing == b.blePairing
+      && a.bleConnected == b.bleConnected && a.bleBonded == b.bleBonded
+      && a.blePasskeyValid == b.blePasskeyValid && a.blePasskey == b.blePasskey
+      && a.activeTransport == b.activeTransport
+      && strncmp(a.bleDeviceName, b.bleDeviceName, sizeof(a.bleDeviceName)) == 0
+      && strncmp(a.bleError, b.bleError, sizeof(a.bleError)) == 0;
+}
+
+const char* bluetoothStatus(const State& state) {
+  if (!state.bleEnabled) return tr("蓝牙已关闭", "Bluetooth off");
+  if (!state.bleAvailable) return state.bleError[0] ? tr("蓝牙不可用", "Bluetooth unavailable")
+      : tr("正在启动蓝牙", "Starting Bluetooth");
+  if (state.bleReady) return tr("蓝牙已连接", "Bluetooth connected");
+  if (state.blePairing) return tr("等待电脑配对", "Waiting for pairing");
+  if (state.bleConnected) return tr("正在建立连接", "Connecting");
+  if (state.bleError[0]) return tr("连接需要处理", "Connection needs attention");
+  if (state.bleBonded) return tr("正在重新连接", "Reconnecting");
+  return tr("尚未配对", "Not paired");
+}
+
+const char* activeTransportLabel(const State& state) {
+  if (state.activeTransport == Transport::Usb) return tr("USB 有线", "USB cable");
+  if (state.activeTransport == Transport::Bluetooth) return tr("蓝牙无线", "Bluetooth");
+  return tr("暂无连接", "No active connection");
+}
+
+void bluetoothPasskey(const State& state, char* destination, size_t capacity) {
+  if (state.blePairing && state.blePasskeyValid && state.blePasskey<1000000)
+    snprintf(destination,capacity,"%06lu",static_cast<unsigned long>(state.blePasskey));
+  else snprintf(destination,capacity,"------");
+}
+
+const char* transportReceipt(const State& state, bool submitted) {
+  // MicroLink clears receipts whenever the selected transport/session changes.
+  if (state.activeTransport==Transport::Bluetooth)
+    return submitted ? tr("蓝牙已提交", "BLE submitted") : tr("蓝牙未发送", "BLE not sent");
+  if (state.activeTransport==Transport::Usb)
+    return submitted ? tr("USB已提交", "USB submitted") : tr("USB未发送", "USB not sent");
+  return submitted ? tr("已提交", "Submitted") : tr("未发送", "Not sent");
+}
+
+void drawBluetoothEntry(const State& state) {
+  constexpr int x=40, y=608, w=1200, h=80;
+  const bool pressed=renderedSettingsControl==6;
+  paintBody(x,y,w,h);
+  keycap(x,y,w,h,pressed);
+  text(tr("连接", "Connections"),76,632+(pressed?2:0),INK,UiFont::sans24());
+  centerFitted(bluetoothStatus(state),710,648+(pressed?2:0),720,MUTED,UiFont::sans20());
+  UiIcons::draw(canvas,UiIcons::Icon::ChevronRight,1194,648+(pressed?2:0),24,INK);
+}
+
+void drawBluetoothToggle(const State& state) {
+  constexpr int x=918,y=124,w=306,h=72;
+  paintBody(x,96,w,100);
+  text("Bluetooth",x+12,100,MUTED,UiFont::sans16());
+  const bool pressed=renderedSettingsControl==7;
+  keycap(x,y,w,h,pressed,state.bleEnabled ? material->accent : 0);
+  center(state.bleEnabled ? tr("已开启", "On") : tr("已关闭", "Off"),x+w/2,
+      y+35+(pressed?2:0),INK,UiFont::sans24());
+}
+
+void drawBluetoothStatus(const State& state) {
+  constexpr int x=40,y=216,w=1200,h=254;
+  MaterialGradient::solidRoundRect565(canvas,x,y,w,h,24,surface565(material->trayTop));
+  MaterialGradient::strokeRoundRect(canvas,x,y,w,h,24,.8f,
+      mix(material->trayTop,material->edge,.4f));
+  text(tr("当前输入通道", "Active input"),76,238,MUTED,UiFont::sans20());
+  text(activeTransportLabel(state),76,278,INK,UiFont::sans32());
+  text(bluetoothStatus(state),76,330,state.bleReady ? material->accent : INK,UiFont::sans24());
+  char name[80];
+  snprintf(name,sizeof(name),"%s%s",tr("设备名：", "Device: "),
+      state.bleDeviceName[0] ? state.bleDeviceName : "Tab5 Codex Micro");
+  const auto* nameFont=UiText::bounds(UiFont::sans20(),name).w<=704 ? UiFont::sans20() : UiFont::sans16();
+  canvas.setClipRect(76,370,704,34);
+  text(name,76,374,MUTED,nameFont);
+  canvas.clearClipRect();
+  center(tr("配对验证码", "Pairing code"),1010,250,MUTED,UiFont::sans20());
+  char pin[16];
+  bluetoothPasskey(state,pin,sizeof(pin));
+  center(pin,1010,312,INK,UiFont::sans40());
+  center(tr("按电脑提示完成配对", "Follow the computer prompt"),1010,374,MUTED,UiFont::sans16());
+  if (state.bleError[0]) {
+    canvas.setClipRect(76,416,1128,34);
+    centerFitted(state.bleError,640,434,1120,MUTED,UiFont::sans16());
+    canvas.clearClipRect();
+  } else center(state.blePairing ? tr("配对窗口开放两分钟", "Pairing is open for two minutes")
+      : state.bleBonded ? tr("已保存绑定，开启蓝牙后自动重连", "Pairing saved; Bluetooth reconnects automatically")
+      : tr("仅在点击开始配对后允许新电脑连接", "New computers can pair only after you tap Start pairing"),
+      640,434,MUTED,UiFont::sans16());
+}
+
+void drawBluetoothActions(const State& state) {
+  paintBody(40,494,1200,124);
+  const bool canPair=state.bleAvailable && state.bleEnabled && !state.blePairing;
+  keycap(72,510,548,88,renderedSettingsControl==8,canPair ? material->accent : 0);
+  center(state.blePairing ? tr("配对中", "Pairing...") : tr("开始配对", "Start pairing"),
+      346,553+(renderedSettingsControl==8?2:0),canPair ? INK : MUTED,UiFont::sans28());
+  keycap(660,510,548,88,renderedSettingsControl==9);
+  center(tr("清除绑定", "Forget pairing"),934,553+(renderedSettingsControl==9?2:0),
+      state.bleAvailable && state.bleBonded ? INK : MUTED,UiFont::sans28());
+}
+
+void drawBluetoothConfirm() {
+  MaterialGradient::solidRoundRect565(canvas,132,222,1016,370,28,surface565(material->trayTop));
+  MaterialGradient::strokeRoundRect(canvas,132,222,1016,370,28,.8f,material->edge);
+  center(tr("清除蓝牙绑定？", "Forget Bluetooth pairing?"),640,280,INK,UiFont::sans32());
+  center(tr("这会断开蓝牙，需要重新配对电脑", "Bluetooth will disconnect; pair your computer again to reconnect"),
+      640,348,MUTED,UiFont::sans20());
+  center(tr("USB、音量和亮度设置不会改变", "USB, volume, and brightness settings stay unchanged"),
+      640,390,MUTED,UiFont::sans20());
+  keycap(194,466,420,88,renderedSettingsControl==10);
+  center(tr("取消", "Cancel"),404,509+(renderedSettingsControl==10?2:0),INK,UiFont::sans28());
+  keycap(666,466,420,88,renderedSettingsControl==11);
+  center(tr("清除绑定", "Forget pairing"),876,509+(renderedSettingsControl==11?2:0),
+      dark() ? 0xEAB0A0 : 0x9A4438,UiFont::sans28());
+}
+
+void drawBluetoothSettings(const State& state) {
+  text(tr("连接", "Connections"),64,132,INK,UiFont::sans32());
+  text(tr("USB 优先，拔线后自动使用已连接的蓝牙", "USB takes priority; connected Bluetooth takes over when unplugged"),
+      64,182,MUTED,UiFont::sans20());
+  if (bluetoothForgetConfirm) drawBluetoothConfirm();
+  else {
+    drawBluetoothToggle(state);
+    drawBluetoothStatus(state);
+    drawBluetoothActions(state);
+  }
+  center(bluetoothForgetConfirm ? tr("取消或返回即可保留绑定", "Cancel or Back keeps your pairing")
+      : tr("右上角返回声音与显示", "Tap Back above for Sound & display"),640,654,MUTED,UiFont::sans20());
+}
+
+void drawSettings(const State& state) {
   text(tr("声音与显示", "Sound & display"), 64, 132, INK, UiFont::sans32());
   text(tr("拖动滑杆，找到舒服的状态", "Make the controls feel right for you"), 64, 182, MUTED, UiFont::sans20());
   drawLanguageButton();
@@ -580,7 +721,7 @@ void drawSettings() {
   drawSettingsSlider(BRIGHTNESS_Y, renderedBrightness, 10, renderedSettingsControl == 2);
   drawSettingsValue(BRIGHTNESS_Y, renderedBrightness);
   text(tr("最低亮度 10%", "Minimum brightness: 10%"), 320, 554, MUTED, UiFont::sans16());
-  center(tr("右上角返回控制台", "Tap Back above to return to the console"), 640, 654, MUTED, UiFont::sans20());
+  drawBluetoothEntry(state);
 }
 
 void updateSettingsSlider(int y, uint8_t value, uint8_t oldValue, uint8_t minimum,
@@ -605,7 +746,7 @@ void updateSettingsSlider(int y, uint8_t value, uint8_t oldValue, uint8_t minimu
   }
 }
 
-bool updateSettings(bool soundChanged) {
+bool updateSettings(bool soundChanged, const State& state) {
   bool changed = renderedVolume != previousVolume || renderedBrightness != previousBrightness
       || renderedSettingsControl != previousSettingsControl || soundChanged;
   updateSettingsSlider(VOLUME_Y, renderedVolume, previousVolume, 0,
@@ -620,7 +761,35 @@ bool updateSettings(bool soundChanged) {
     drawLanguageButton();
     present(918, 96, 306, 100);
   }
+  if (!sameBluetooth(state,previousState) || (renderedSettingsControl==6)!=(previousSettingsControl==6)) {
+    drawBluetoothEntry(state);
+    present(40,608,1200,80);
+    changed=true;
+  }
   return changed;
+}
+
+bool updateBluetoothSettings(const State& state) {
+  const bool controlChanged=renderedSettingsControl!=previousSettingsControl;
+  if (bluetoothForgetConfirm) {
+    if (!controlChanged) return false;
+    drawBluetoothConfirm();
+    present(132,222,1016,370);
+    return true;
+  }
+  const bool stateChanged=!sameBluetooth(state,previousState);
+  if (!stateChanged && !controlChanged) return false;
+  if (stateChanged || (renderedSettingsControl==7)!=(previousSettingsControl==7)) {
+    drawBluetoothToggle(state);
+    present(918,96,306,100);
+  }
+  if (stateChanged) {
+    drawBluetoothStatus(state);
+    present(40,216,1200,254);
+  }
+  drawBluetoothActions(state);
+  present(40,494,1200,124);
+  return true;
 }
 
 void drawHostSignal(const State& state) {
@@ -646,11 +815,18 @@ void drawHeader(const State& state) {
   center(settingsMode ? tr("设置", "Settings") : state.lightingPreview ? tr("状态演示", "Preview") : playMode ? tr("游戏", "Play") : tr("控制台", "Console"),
          340, 49, INK, UiFont::sans24());
   drawHostSignal(state);
-  const bool synced = state.usbMounted;
+  const bool synced = state.usbMounted || state.bleReady;
   uint32_t connection = synced ? (dark() ? 0x9DD6BB : 0x3F8065) : MUTED;
   circleGradient(687, 49, 4, connection, connection);
-  text(synced ? tr("USB已连接", "USB connected") : tr("USB未连接", "USB offline"), 704, 41,
-       connection, UiFont::sans16());
+  const char* connectionLabel=state.activeTransport==Transport::Bluetooth
+      ? tr("蓝牙已连接", "BLE connected")
+      : state.usbMounted ? tr("USB已连接", "USB connected")
+      : state.bleReady ? tr("蓝牙已连接", "BLE connected")
+      : state.blePairing ? tr("蓝牙配对中", "BLE pairing")
+      : state.bleConnected ? tr("蓝牙连接中", "BLE connecting")
+      : state.bleEnabled && state.bleBonded ? tr("蓝牙重连中", "BLE reconnect")
+      : state.bleEnabled ? tr("蓝牙未连接", "BLE offline") : tr("USB未连接", "USB offline");
+  text(connectionLabel,704,41,connection,UiFont::sans16());
   keycap(844, 13, 88, 72, headerHeld == 3);
   UiIcons::draw(canvas, UiIcons::Icon::Gear, 888, 49 + (headerHeld == 3 ? 2 : 0), 32,
                 settingsMode ? material->accent : INK);
@@ -809,8 +985,7 @@ void drawMappedAction(const State& state, int index, int layoutIndex,
       active ? accent : ink);
   centerFitted(active && voice ? tr("已按住", "Held") : actionLabel(action, fallback),
       cx, 635 + drop, w - 24, ink, UiFont::sans28());
-  center(receipt ? receipt == 1 ? tr("USB已提交", "USB submitted") : tr("USB未发送", "USB not sent")
-                 : actionCaption(state, index, action),
+  center(receipt ? transportReceipt(state,receipt==1) : actionCaption(state, index, action),
       cx, 668 + drop, receipt ? accent : MUTED, UiFont::sans16());
   renderedActionFeedback[index] = receipt;
 }
@@ -998,6 +1173,12 @@ bool sameSlot(const Slot& a, const Slot& b) {
 
 bool updateHeader(const State& state) {
   const bool structural = state.usbMounted != previousState.usbMounted
+      || state.activeTransport != previousState.activeTransport
+      || state.bleConnected != previousState.bleConnected
+      || state.bleReady != previousState.bleReady
+      || state.bleEnabled != previousState.bleEnabled
+      || state.blePairing != previousState.blePairing
+      || state.bleBonded != previousState.bleBonded
       || state.connected != previousState.connected
       || bool(state.rpc_count) != bool(previousState.rpc_count)
       || state.lightingPreview != previousState.lightingPreview
@@ -1177,6 +1358,11 @@ bool render(const State& liveState) {
   InputState snapshot;
   MicroControls::Visual visual;
   portENTER_CRITICAL(&inputMux);
+  input.bleAvailable=liveState.bleAvailable;
+  input.bleEnabled=liveState.bleEnabled;
+  input.bleReady=liveState.bleReady;
+  input.blePairing=liveState.blePairing;
+  input.bleBonded=liveState.bleBonded;
   snapshot = input;
   visual = MicroControls::visual();
   portEXIT_CRITICAL(&inputMux);
@@ -1192,6 +1378,8 @@ bool render(const State& liveState) {
   advanceTitleClocks(snapshot, now);
   const bool immediate = localeChanged || titleTestRevision != appliedTitleTestRevision || displayInvalidated || snapshot.held != held || snapshot.playMode != playMode
       || snapshot.settingsMode != settingsMode
+      || snapshot.bluetoothPage != bluetoothPage
+      || snapshot.bluetoothForgetConfirm != bluetoothForgetConfirm
       || snapshot.finger != finger || snapshot.fullPresent != forceFullPresent
       || visual.revision != controls.revision
       || snapshot.effectsFrozen != effectsFrozen
@@ -1202,6 +1390,7 @@ bool render(const State& liveState) {
       || !sameConfig(state.hostConfig, previousState.hostConfig)
       || !sameChat(state.hostChat, previousState.hostChat)
       || !sameLights(state.hostLights, previousState.hostLights)
+      || !sameBluetooth(state,previousState)
       || !sameReceipts(state, previousState);
   if (immediate || snapshot.finger) lastInteraction = now;
   const bool fxDue = animatedSlots && !snapshot.playMode && !snapshot.settingsMode && !snapshot.effectsFrozen
@@ -1213,12 +1402,17 @@ bool render(const State& liveState) {
   const bool themeChanged = snapshot.themeRevision != appliedThemeRevision;
   const bool soundChanged = snapshot.soundRevision != appliedSoundRevision;
   const bool full = !frame || snapshot.playMode != previousMode
-      || snapshot.settingsMode != previousSettingsMode || themeChanged || localeChanged;
+      || snapshot.settingsMode != previousSettingsMode
+      || snapshot.bluetoothPage != previousBluetoothPage
+      || snapshot.bluetoothForgetConfirm != previousBluetoothForgetConfirm
+      || themeChanged || localeChanged;
   finger = snapshot.finger;
   controls = visual;
   held = visual.held;
   playMode = snapshot.playMode;
   settingsMode = snapshot.settingsMode;
+  bluetoothPage = snapshot.bluetoothPage;
+  bluetoothForgetConfirm = snapshot.bluetoothForgetConfirm;
   forceFullPresent = snapshot.fullPresent;
   effectsFrozen = snapshot.effectsFrozen;
   renderedSoundEnabled = snapshot.soundEnabled;
@@ -1247,7 +1441,8 @@ bool render(const State& liveState) {
     drawHeader(state);
     profiling.fullHeader = max(profiling.fullHeader, micros() - phaseStarted);
     phaseStarted = micros();
-    if (settingsMode) drawSettings();
+    if (settingsMode && bluetoothPage) drawBluetoothSettings(state);
+    else if (settingsMode) drawSettings(state);
     else if (playMode) MicroGames::render(canvas, now, true);
     else drawDashboard(state);
     profiling.fullContent = max(profiling.fullContent, micros() - phaseStarted);
@@ -1256,7 +1451,8 @@ bool render(const State& liveState) {
     profiling.fullPresent = max(profiling.fullPresent, micros() - phaseStarted);
   } else {
     drew |= updateHeader(state);
-    if (settingsMode) drew |= updateSettings(soundChanged);
+    if (settingsMode && bluetoothPage) drew |= updateBluetoothSettings(state);
+    else if (settingsMode) drew |= updateSettings(soundChanged,state);
     else if (playMode) {
       if (MicroGames::render(canvas, now, false)) {
         size_t count = 0;
@@ -1325,6 +1521,8 @@ bool render(const State& liveState) {
   previousControls = controls;
   previousMode = playMode;
   previousSettingsMode = settingsMode;
+  previousBluetoothPage = bluetoothPage;
+  previousBluetoothForgetConfirm = bluetoothForgetConfirm;
   previousHeaderHeld = headerHeld;
   previousEffectsFrozen = effectsFrozen;
   appliedTitleTestRevision = titleTestRevision;
@@ -1354,12 +1552,16 @@ Event touch(int16_t x, int16_t y, bool pressed) {
       input.headerControl = 1;
     } else if (gameButton) {
       if (input.settingsMode) {
-        input.settingsMode = false;
+        if (input.bluetoothForgetConfirm) input.bluetoothForgetConfirm=false;
+        else if (input.bluetoothPage) input.bluetoothPage=false;
+        else input.settingsMode = false;
         input.playMode = false;
       } else input.playMode = !input.playMode;
       input.headerControl = 2;
     } else {
       input.settingsMode = !input.settingsMode;
+      input.bluetoothPage = false;
+      input.bluetoothForgetConfirm = false;
       input.playMode = false;
       input.headerControl = 3;
     }
@@ -1386,6 +1588,36 @@ Event touch(int16_t x, int16_t y, bool pressed) {
     return event;
   }
   if (input.settingsMode) {
+    if (input.bluetoothPage) {
+      if (pressed && !wasDown) {
+        input.settingsControl=4;
+        if (input.bluetoothForgetConfirm) {
+          if (inside(x,y,194,458,420,104)) {
+            input.settingsControl=10;
+            input.bluetoothForgetConfirm=false;
+          } else if (inside(x,y,666,458,420,104)) {
+            input.settingsControl=11;
+            input.bluetoothForgetConfirm=false;
+            if (input.bleAvailable && input.bleBonded) {
+              event.key="ble_forget"; event.action=1;
+            }
+          }
+        } else if (inside(x,y,918,116,306,88)) {
+          input.settingsControl=7;
+          event.key="ble_toggle"; event.action=1;
+        } else if (inside(x,y,72,502,548,104)
+            && input.bleAvailable && input.bleEnabled && !input.blePairing) {
+          input.settingsControl=8;
+          event.key="ble_pair"; event.action=1;
+        } else if (inside(x,y,660,502,548,104) && input.bleAvailable && input.bleBonded) {
+          input.settingsControl=9;
+          input.bluetoothForgetConfirm=true;
+        }
+      }
+      if (!pressed) input.settingsControl=0;
+      portEXIT_CRITICAL(&inputMux);
+      return event;
+    }
     if (pressed && !wasDown) {
       if (inside(x, y, 72, 280, 184, 88)) {
         input.settingsControl = 3;
@@ -1399,6 +1631,10 @@ Event touch(int16_t x, int16_t y, bool pressed) {
         input.settingsControl = 5;
         UiLocale::setLanguage(UiLocale::english() ? UiLocale::Language::Chinese
                                                  : UiLocale::Language::English);
+      } else if (inside(x,y,40,608,1200,80)) {
+        input.settingsControl=6;
+        input.bluetoothPage=true;
+        input.bluetoothForgetConfirm=false;
       } else if (inside(x, y, 280, 256, 944, 88)) input.settingsControl = 1;
       else if (inside(x, y, 280, 456, 944, 88)) input.settingsControl = 2;
       else input.settingsControl = 4;
@@ -1547,6 +1783,7 @@ bool effectsAreFrozen() {
   return frozen;
 }
 const uint16_t* framebuffer() { return static_cast<const uint16_t*>(canvas.getBuffer()); }
+const State& renderedState() { return previousState; }
 int bufferWidth() { return W; }
 int bufferHeight() { return H; }
 

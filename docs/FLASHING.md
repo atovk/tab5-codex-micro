@@ -4,6 +4,8 @@
 
 适用版本：**Tab5 Codex Micro 0.11.1**。硬件为 ESP32-P4 的 **M5Stack Tab5，16MB Flash／32MB PSRAM**。本指南使用预编译发布包，无需克隆仓库、安装 PlatformIO 或编译固件。
 
+此发布包仅支持 USB。USB／BLE 双模属于尚未发布的 0.12.0 源码开发，实机验证仍在进行；详见 [蓝牙连接说明](BLUETOOTH.md)。蓝牙功能不提供无线刷机，固件和字库仍通过 USB 写入。
+
 ## 1. 下载并解压
 
 从 [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1) 下载 **`tab5-codex-micro-0.11.1.zip`**，完整解压到一个目录。不要直接在压缩包中运行脚本，也不要只下载 GitHub 自动生成的 “Source code” 压缩包。

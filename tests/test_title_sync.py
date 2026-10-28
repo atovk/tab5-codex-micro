@@ -290,6 +290,7 @@ class AckReliabilityTests(unittest.TestCase):
 
         def write(self, data):
             self.writes.append(data)
+            return len(data)
 
         def flush(self):
             pass

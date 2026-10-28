@@ -186,6 +186,16 @@ int main() {
     q.cancelInputs(); q.disconnect(); assert(q.takeDroppedKeys()==0);
     ++tests;
   }
-  std::cout<<tests<<"/19 transport tests passed\n";
-  assert(tests==19);
+  { // Capturing may overlap replies, but not an unfinished native gesture or
+    // cleanup. Cancelling unsent input becomes idle without a fake release.
+    Queue q; assert(q.nativeIdle()); assert(push(q,"reply",{})); assert(q.nativeIdle());
+    assert(push(q,down,press)); assert(!q.nativeIdle());
+    q.cancelInputs(); assert(q.nativeIdle()); finish(q);
+    assert(push(q,down,press)); finish(q); assert(!q.nativeIdle());
+    q.cancelInputs(); assert(!q.nativeIdle()); finish(q); assert(q.nativeIdle());
+    assert(push(q,"move",{Kind::Stick,-1,0,2})); finish(q); assert(!q.nativeIdle());
+    q.disconnect(); assert(q.nativeIdle()); ++tests;
+  }
+  std::cout<<tests<<"/20 transport tests passed\n";
+  assert(tests==20);
 }

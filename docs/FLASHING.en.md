@@ -4,6 +4,8 @@
 
 For **Tab5 Codex Micro 0.11.1**, targeting the ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. This guide uses a precompiled bundle. You do not need to clone the repository, install PlatformIO, or compile firmware.
 
+This release bundle supports USB only. USB/BLE support is part of unreleased 0.12.0 source development, with hardware validation ongoing; see the [Bluetooth guide](BLUETOOTH.en.md). Bluetooth does not provide wireless flashing. Firmware and fonts are still written over USB.
+
 ## 1. Download and extract
 
 Download **`tab5-codex-micro-0.11.1.zip`** from the [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1) and extract the entire archive into one directory. Do not run the script from inside the ZIP or download only GitHub's automatically generated “Source code” archive.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sync explicitly assigned chat titles and local configuration defaults to Tab5.
+"""Sync assigned titles and configuration to Tab5 over USB or Bluetooth.
 
 The default invocation is a dry run with counts and configuration enums only.
 --show-titles includes the six title rows. --once sends both packets; --watch
@@ -11,6 +11,7 @@ never inferred from chat recency, and unsupported input clears all titles.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 import json
 import math
@@ -27,6 +28,7 @@ from urllib.parse import quote
 import desktop_sync
 import chat_sync
 from tab5_transport import SerialBusyError, open_serial
+from tab5_metadata import MetadataTransport
 
 
 SLOT_COUNT = 6
@@ -232,7 +234,8 @@ class _AckLines:
 def _send_command(connection, command: bytes, seq: int, name: str, timeout: float,
                   responses: _AckLines | None = None) -> None:
     responses = responses if responses is not None else _AckLines()
-    connection.write(command)
+    if connection.write(command) != len(command):
+        raise OSError("Tab5 metadata command was only partially written")
     connection.flush()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -257,7 +260,8 @@ def send_snapshot(snapshot: Snapshot, seq: int, port: str | None = None, timeout
 
 def send_snapshots(snapshot: Snapshot, desktop: desktop_sync.DesktopSnapshot, seq: int,
                    port: str | None = None, timeout: float = 0.5, *,
-                   ack_timeout: float = ACK_TIMEOUT_SECONDS) -> None:
+                   ack_timeout: float = ACK_TIMEOUT_SECONDS, transport=None,
+                   refresh=None) -> None:
     """Send both snapshots while holding the same exact-device serial lock.
 
     The short serial-lock wait and each packet's acknowledgement budget are
@@ -270,10 +274,18 @@ def send_snapshots(snapshot: Snapshot, desktop: desktop_sync.DesktopSnapshot, se
         raise ValueError("Acknowledgement timeout must be finite and positive")
     commands = (("TITLES", encode_command(snapshot, seq)),
                 ("HOST_CONFIG", desktop_sync.encode_command(desktop, seq)))
-    with open_serial(port, timeout) as connection:
+    context = transport.connection(port, timeout) if transport is not None else open_serial(port, timeout)
+    with context as connection:
         responses = _AckLines()
         failures = []
         for name, command in commands:
+            if refresh is not None:
+                # BLE discovery/pairing and title delivery can outlast the live
+                # cache's freshness window. Re-read immediately before each
+                # packet; never replay snapshots queued before reconnection.
+                fresh_titles, fresh_desktop = refresh()
+                command = (encode_command(fresh_titles, seq) if name == "TITLES"
+                           else desktop_sync.encode_command(fresh_desktop, seq))
             try:
                 _send_command(connection, command, seq, name, ack_timeout, responses)
             except (RuntimeError, TimeoutError) as error:
@@ -308,17 +320,22 @@ def combined_summary(snapshot: Snapshot, desktop: desktop_sync.DesktopSnapshot,
 
 
 def watch(state_path: Path, db_path: Path, port: str | None, show_titles: bool = False,
-          config_path: Path | None = None, chat_cache: Path | None = None) -> None:
+          config_path: Path | None = None, chat_cache: Path | None = None, *,
+          transport=None) -> None:
     seq = int(time.time()) & 0xFFFFFFFF
     last_sent = None
     last_notice = None
     next_heartbeat = 0.0
     failed_attempts = 0
-    while True:
+    def current_snapshots():
         snapshot = build_snapshot(state_path, db_path, config_path)
         desktop = desktop_sync.build_snapshot(state_path, config_path)
         if chat_cache is not None:
             desktop = replace(desktop, chat=chat_sync.build_snapshot(chat_cache, db_path))
+        return snapshot, desktop
+
+    while True:
+        snapshot, desktop = current_snapshots()
         identity = (snapshot.source, snapshot.slots, desktop)
         now = time.monotonic()
         notice = (snapshot.source, snapshot.reason, snapshot.configured, snapshot.resolved, desktop)
@@ -328,7 +345,8 @@ def watch(state_path: Path, db_path: Path, port: str | None, show_titles: bool =
         if identity != last_sent or now >= next_heartbeat:
             try:
                 seq = (seq + 1) & 0xFFFFFFFF
-                send_snapshots(snapshot, desktop, seq, port, timeout=0.5)
+                options = {"transport": transport, "refresh": current_snapshots} if transport is not None else {}
+                send_snapshots(snapshot, desktop, seq, port, timeout=0.5, **options)
                 last_sent = identity
                 next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
                 if getattr(watch, "_transport_notice", None) is not None:
@@ -339,7 +357,7 @@ def watch(state_path: Path, db_path: Path, port: str | None, show_titles: bool =
                 transport_notice = None
                 details = {}
             except SerialBusyError:
-                transport_notice = "Tab5 serial interface is busy; heartbeat skipped"
+                transport_notice = "Tab5 metadata interface is busy; heartbeat skipped"
                 details = {"packet": "connection", "failure": "busy"}
                 failed_attempts += 1
             except (OSError, RuntimeError, TimeoutError, ValueError) as error:
@@ -366,19 +384,38 @@ def main() -> int:
     parser.add_argument("--db", type=Path, default=codex_home / "state_5.sqlite")
     parser.add_argument("--config", type=Path, help="Desktop config.toml; defaults beside the state file")
     parser.add_argument("--port", help="Still requires the exact Tab5 VID/PID and serial identity")
+    parser.add_argument("--transport", choices=("auto", "usb", "ble"), default="auto",
+                        help="auto prefers USB; BLE reuses one authenticated connection")
+    parser.add_argument("--device-serial", help="P4 chip identity, TAB5-0123456789AB; permits BLE-only cold start")
     parser.add_argument("--chat-cache", type=Path, default=chat_sync.DEFAULT_CACHE,
                         help="Live metadata from the explicit desktop IPC subscription")
     args = parser.parse_args()
     try:
         if args.watch:
-            watch(args.state, args.db, args.port, args.show_titles, args.config, args.chat_cache)
+            with MetadataTransport(args.transport, args.device_serial) as transport:
+                watch(args.state, args.db, args.port, args.show_titles, args.config, args.chat_cache,
+                      transport=transport)
         else:
             snapshot = build_snapshot(args.state, args.db, args.config)
             desktop = desktop_sync.build_snapshot(args.state, args.config)
             desktop = replace(desktop, chat=chat_sync.build_snapshot(args.chat_cache, args.db))
             if args.once:
-                send_snapshots(snapshot, desktop, int(time.time()) & 0xFFFFFFFF, args.port)
-            print(json.dumps(combined_summary(snapshot, desktop, args.show_titles), ensure_ascii=False, indent=2))
+                def refresh():
+                    titles = build_snapshot(args.state, args.db, args.config)
+                    defaults = desktop_sync.build_snapshot(args.state, args.config)
+                    return titles, replace(defaults, chat=chat_sync.build_snapshot(args.chat_cache, args.db))
+                # Keep the explicit USB-only CLI available without loading any
+                # Bluetooth dependency, as with the historical serial helper.
+                context = (nullcontext(None) if args.transport == "usb" and args.device_serial is None
+                           else MetadataTransport(args.transport, args.device_serial))
+                with context as transport:
+                    options = {"transport": transport, "refresh": refresh} if transport is not None else {}
+                    send_snapshots(snapshot, desktop, int(time.time()) & 0xFFFFFFFF, args.port, **options)
+            report = combined_summary(snapshot, desktop, args.show_titles)
+            if args.once:
+                report["delivery"] = {"status": "acknowledged",
+                                      "transport": transport.active if transport is not None else "usb"}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     except KeyboardInterrupt:
         return 0

@@ -23,7 +23,7 @@ class MicroTransportTests(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             result = subprocess.run([str(binary)], text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("19/19 transport tests passed", result.stdout)
+            self.assertIn("20/20 transport tests passed", result.stdout)
 
 
 if __name__ == "__main__":

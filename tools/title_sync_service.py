@@ -18,6 +18,8 @@ import subprocess
 import sys
 import tempfile
 
+from tab5_transport import selected_serial
+
 
 LABEL = "com.tab5.codex-micro.titles"
 WORKSPACE = Path(__file__).resolve().parent.parent
@@ -106,18 +108,17 @@ def unload() -> bool:
     return result.returncode == 0
 
 
-def install() -> dict:
-    if not PYTHON.is_file() or not os.access(PYTHON, os.X_OK):
-        raise ServiceError(f"The workspace Python interpreter is missing or not executable: {PYTHON}")
-    if not COMPANION.is_file():
-        raise ServiceError(f"The title companion is missing: {COMPANION}")
-    # Check the user's GUI launch domain before writing anything.
-    loaded_info()
-    LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    plist = {
+def service_plist(mode: str = "auto", serial_number: str | None = None) -> dict:
+    """Construct the one hardware-owner service; the IPC bridge stays cache-only."""
+    if mode not in ("auto", "usb", "ble"):
+        raise ValueError("Metadata transport must be auto, usb or ble")
+    identity = selected_serial(serial_number)
+    arguments = [str(PYTHON), str(COMPANION), "--watch", "--transport", mode]
+    if identity is not None:
+        arguments.extend(("--device-serial", identity))
+    return {
         "Label": LABEL,
-        "ProgramArguments": [str(PYTHON), str(COMPANION), "--watch"],
+        "ProgramArguments": arguments,
         "WorkingDirectory": str(WORKSPACE),
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -128,6 +129,18 @@ def install() -> dict:
         "StandardOutPath": str(LOG_DIRECTORY / "titles.stdout.log"),
         "StandardErrorPath": str(LOG_DIRECTORY / "titles.stderr.log"),
     }
+
+
+def install(mode: str = "auto", serial_number: str | None = None) -> dict:
+    plist = service_plist(mode, serial_number)
+    if not PYTHON.is_file() or not os.access(PYTHON, os.X_OK):
+        raise ServiceError(f"The workspace Python interpreter is missing or not executable: {PYTHON}")
+    if not COMPANION.is_file():
+        raise ServiceError(f"The title companion is missing: {COMPANION}")
+    # Check the user's GUI launch domain before writing anything.
+    loaded_info()
+    LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -174,19 +187,21 @@ def status() -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("install", help="Start the title companion now and automatically at login.")
+    install_parser = commands.add_parser("install", help="Start the title companion now and automatically at login.")
+    install_parser.add_argument("--transport", choices=("auto", "usb", "ble"), default="auto")
+    install_parser.add_argument("--device-serial", help="Persist the exact P4 USB/BLE chip identity")
     stop_parser = commands.add_parser("stop", help="Unload the title companion; absent services are accepted.")
     stop_parser.add_argument("--remove", action="store_true", help="Also remove its login LaunchAgent plist.")
     commands.add_parser("status", help="Print JSON service state and stable paths.")
     arguments = parser.parse_args()
     try:
         if arguments.command == "install":
-            result = install()
+            result = install(arguments.transport, arguments.device_serial)
         elif arguments.command == "stop":
             result = stop(arguments.remove)
         else:
             result = status()
-    except (ServiceError, OSError) as error:
+    except (ServiceError, OSError, ValueError) as error:
         print(json.dumps({"error": str(error), **paths()}, ensure_ascii=False, indent=2), file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))

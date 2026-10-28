@@ -52,23 +52,35 @@ def serial_lock(timeout: float = 8):
         os.close(descriptor)
 
 
-def serial_port(requested: str | None = None) -> str:
+def selected_serial(value: str | None = None) -> str | None:
+    """Validate the shared USB/BLE chip identity, never a display name."""
+    if value is None:
+        value = os.environ.get("TAB5_SERIAL_NUMBER") or None
+    if value is not None and (not isinstance(value, str) or not SERIAL_PATTERN.fullmatch(value)):
+        raise ValueError("TAB5_SERIAL_NUMBER must have the form TAB5-0123456789AB")
+    return value.upper() if value else None
+
+
+def application_ports(serial_number: str | None = None):
+    """Return exact application interfaces; an empty list permits BLE fallback."""
+    identity = selected_serial(serial_number)
+    return [port for port in list_ports.comports()
+            if port.vid == VID and port.pid == PID
+            and isinstance(port.serial_number, str)
+            and SERIAL_PATTERN.fullmatch(port.serial_number)
+            and (identity is None or port.serial_number.upper() == identity)]
+
+
+def serial_port(requested: str | None = None, *, serial_number: str | None = None) -> str:
     """Resolve one Tab5 application device; never select a ROM or S3.
 
     Multiple Tab5 devices require an explicit port or TAB5_SERIAL_NUMBER.
     The optional serial filter is read for each call, including services.
     """
-    selected_serial = os.environ.get("TAB5_SERIAL_NUMBER") or None
-    if selected_serial is not None and not SERIAL_PATTERN.fullmatch(selected_serial):
-        raise ValueError("TAB5_SERIAL_NUMBER must have the form TAB5-0123456789AB")
     candidates = [
         port.device
-        for port in list_ports.comports()
-        if port.vid == VID and port.pid == PID
-        and isinstance(port.serial_number, str)
-        and SERIAL_PATTERN.fullmatch(port.serial_number)
-        and (selected_serial is None or port.serial_number.upper() == selected_serial.upper())
-        and (requested is None or port.device == requested)
+        for port in application_ports(serial_number)
+        if requested is None or port.device == requested
     ]
     if len(candidates) != 1:
         raise RuntimeError(
@@ -94,7 +106,8 @@ class LockedSerial(serial.Serial):
                 lock_context.__exit__(None, None, None)
 
 
-def open_serial(port: str | None = None, timeout: float = 8) -> LockedSerial:
+def open_serial(port: str | None = None, timeout: float = 8, *,
+                serial_number: str | None = None) -> LockedSerial:
     """Open the exact Tab5 while holding its lock until connection.close()."""
     if timeout <= 0:
         raise ValueError("Serial timeout must be positive")
@@ -102,7 +115,7 @@ def open_serial(port: str | None = None, timeout: float = 8) -> LockedSerial:
     lock_context.__enter__()
     connection = None
     try:
-        target = serial_port(port)
+        target = serial_port(port, serial_number=serial_number)
         connection = LockedSerial(
             port=None, baudrate=115200, timeout=min(0.2, timeout),
             write_timeout=timeout, lock_context=lock_context,

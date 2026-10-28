@@ -20,6 +20,7 @@ ACTION_SLOTS = tuple(f"ACT{i:02d}" for i in range(6, 13))
 TIERS = frozenset(("unknown", "standard", "fast", "ultrafast"))
 ENCODERS = frozenset(("unknown", "composer-navigation", "reasoning", "conversation-scroll", "custom"))
 VOICES = frozenset(("unknown", "push-to-talk", "realtime"))
+JOYSTICK_UP = frozenset(("unknown", "plan"))
 ACTIONS = frozenset(("unknown", "none", "fast", "approve", "reject", "fork", "voice", "aux", "send", "plan", "sidebar", "back", "forward", "custom"))
 UNKNOWN_ACTIONS = ("unknown",) * len(ACTION_SLOTS)
 KEYCAPS = frozenset("FAST.APPR.REJ.SPLIT.MIC.MIC1.CODEX.BUG.OAI.TERM.DWN.DEL.NEW.NAV.MAGIC.DIFF.PLAY.GIT.BRCH.BRANCH.MRG.PR.PAINT.LAB.PARTY.TIME.MIND+.MIND-.EMPT1.EMPT2.EMPT3.EMPT4.SETUP.FOLD.UPL.APPS.YOLO.YEET.EMPT5".split("."))
@@ -48,6 +49,13 @@ DEFAULT_LAYOUT = {
     },
     "encoderMode": "composer-navigation", "voiceButtonMode": "push-to-talk",
     "separateMicrophoneKeys": False,
+    # Installed desktop v1 schema: Dn / Sn.default(Dn), like default keycaps.
+    "analogStick": {
+        "up": {"type": "command", "commandId": "composer.togglePlanMode"},
+        "right": {"type": "command", "commandId": "navigateForward"},
+        "down": {"type": "command", "commandId": "toggleSidebar"},
+        "left": {"type": "command", "commandId": "navigateBack"},
+    },
 }
 
 
@@ -60,6 +68,7 @@ class DesktopSnapshot:
     actions: tuple[str, ...]
     reason: str | None = None
     chat: chat_sync.ChatSnapshot | None = None
+    joystick_up: str = "unknown"
 
 
 def unavailable(reason: str | None = None) -> DesktopSnapshot:
@@ -120,9 +129,9 @@ def _slot_action(slot: dict) -> str:
     }.get(keycap, "aux")
 
 
-def _layout(layout: object) -> tuple[str, str, tuple[str, ...]]:
+def _layout(layout: object) -> tuple[str, str, tuple[str, ...], str]:
     """Mirror the desktop v1 schema without silently repairing invalid input."""
-    unknown = ("unknown", "unknown", UNKNOWN_ACTIONS)
+    unknown = ("unknown", "unknown", UNKNOWN_ACTIONS, "unknown")
     if not isinstance(layout, dict) or type(layout.get("version")) is not int or layout["version"] != 1:
         return unknown
     slots = layout.get("slots")
@@ -145,8 +154,9 @@ def _layout(layout: object) -> tuple[str, str, tuple[str, ...]]:
         return unknown
     if not isinstance(voice, str) or voice not in VOICES - {"unknown"} or not isinstance(separate, bool):
         return unknown
-    # These fields are not transmitted, but malformed mappings invalidate the
-    # desktop's whole v1 layout rather than selecting a plausible default.
+    # Only the bounded Up/Plan fact is exported, never custom mappings. Invalid
+    # mappings invalidate the desktop's whole v1 layout rather than selecting
+    # a plausible default.
     for key, directions in (("analogStick", ("up", "right", "down", "left")),
                             ("encoder", ("left", "right", "click", "longPress"))):
         if key not in layout:
@@ -161,7 +171,10 @@ def _layout(layout: object) -> tuple[str, str, tuple[str, ...]]:
         # Native bridge routes ACT10 through the shared key and deliberately
         # ignores ACT11, even when the shared key carries a custom action.
         actions = (*actions[:4], _slot_action(normalized["ACT10_ACT11"]), "none", actions[6])
-    return encoder, voice, actions
+    up = layout.get("analogStick", DEFAULT_LAYOUT["analogStick"]).get("up")
+    joystick_up = ("plan" if isinstance(up, dict) and up.get("type") == "command"
+                   and up.get("commandId") == "composer.togglePlanMode" else "unknown")
+    return encoder, voice, actions, joystick_up
 
 
 def build_snapshot(state_path: Path, config_path: Path | None = None) -> DesktopSnapshot:
@@ -189,19 +202,21 @@ def build_snapshot(state_path: Path, config_path: Path | None = None) -> Desktop
         return unavailable("Local configuration is unavailable or invalid")
     desktop = config.get("desktop", {})
     reason = None
+    joystick_up = "unknown"
     if not isinstance(desktop, dict):
         encoder, voice, actions = "unknown", "unknown", UNKNOWN_ACTIONS
         reason = "Desktop layout is unavailable or invalid"
     elif LAYOUT_KEY in desktop:
-        encoder, voice, actions = _layout(desktop[LAYOUT_KEY])
+        encoder, voice, actions, joystick_up = _layout(desktop[LAYOUT_KEY])
     elif state is None:
         encoder, voice, actions = "unknown", "unknown", UNKNOWN_ACTIONS
         reason = "Desktop layout is unavailable or invalid"
     else:
-        encoder, voice, actions = _layout(state.get(LAYOUT_KEY, DEFAULT_LAYOUT))
+        encoder, voice, actions, joystick_up = _layout(state.get(LAYOUT_KEY, DEFAULT_LAYOUT))
     if encoder == "unknown" and reason is None:
         reason = "Desktop layout is unavailable or invalid"
-    return DesktopSnapshot("local-config", _tier(config), encoder, voice, actions, reason)
+    return DesktopSnapshot("local-config", _tier(config), encoder, voice, actions, reason,
+                           joystick_up=joystick_up)
 
 
 def encode_command(snapshot: DesktopSnapshot, seq: int) -> bytes:
@@ -215,12 +230,15 @@ def encode_command(snapshot: DesktopSnapshot, seq: int) -> bytes:
         raise ValueError("Invalid desktop encoder")
     if not isinstance(snapshot.voice, str) or snapshot.voice not in VOICES:
         raise ValueError("Invalid desktop voice")
+    if not isinstance(snapshot.joystick_up, str) or snapshot.joystick_up not in JOYSTICK_UP:
+        raise ValueError("Invalid desktop joystick Up mapping")
     if not isinstance(snapshot.actions, (tuple, list)) or len(snapshot.actions) != len(ACTION_SLOTS) or any(not isinstance(v, str) or v not in ACTIONS for v in snapshot.actions):
         raise ValueError("Exactly seven bounded desktop actions are required")
-    if snapshot.source == "unavailable" and (snapshot.tier, snapshot.encoder, snapshot.voice, tuple(snapshot.actions)) != ("unknown", "unknown", "unknown", UNKNOWN_ACTIONS):
+    if snapshot.source == "unavailable" and (snapshot.tier, snapshot.encoder, snapshot.voice, tuple(snapshot.actions), snapshot.joystick_up) != ("unknown", "unknown", "unknown", UNKNOWN_ACTIONS, "unknown"):
         raise ValueError("Unavailable desktop snapshots must clear every field")
     payload = {"v": 1, "seq": seq, "source": snapshot.source, "tier": snapshot.tier,
-               "encoder": snapshot.encoder, "voice": snapshot.voice, "actions": list(snapshot.actions)}
+               "encoder": snapshot.encoder, "voice": snapshot.voice, "actions": list(snapshot.actions),
+               "joystick_up": snapshot.joystick_up}
     if snapshot.chat is not None:
         payload["chat"] = chat_sync.payload(snapshot.chat)
     return b"HOST_CONFIG " + json.dumps(payload, separators=(",", ":")).encode("ascii") + b"\n"
@@ -229,6 +247,7 @@ def encode_command(snapshot: DesktopSnapshot, seq: int) -> bytes:
 def summary(snapshot: DesktopSnapshot) -> dict:
     result = {"source": snapshot.source, "scope": "configuration-defaults", "tier": snapshot.tier,
               "encoder": snapshot.encoder, "voice": snapshot.voice, "actions": list(snapshot.actions),
+              "joystick_up": snapshot.joystick_up,
               "known_actions": sum(v != "unknown" for v in snapshot.actions),
               "command_bytes": len(encode_command(snapshot, 1))}
     if snapshot.reason:

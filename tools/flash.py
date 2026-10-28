@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -26,8 +27,11 @@ def run(args, *, capture_output=False):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', help='Tab5 serial port; required for ROM or multiple devices')
-    parser.add_argument('--skip-build', action='store_true', help='Flash the already-built factory image')
-    parser.add_argument('--font-image', type=Path,
+    parser.add_argument('--skip-build', action='store_true', help='Flash already-built firmware images')
+    images = parser.add_mutually_exclusive_group()
+    images.add_argument('--app-only', action='store_true',
+                        help='Update only firmware.bin at 0x10000, preserving NVS, fonts and settings')
+    images.add_argument('--font-image', type=Path,
                         help='Also write a validated T5VLW4 title font to the reserved data partition')
     args = parser.parse_args(argv)
     pio = ROOT / '.venv/bin/pio'
@@ -124,10 +128,48 @@ def wait_for_application(expected_serial, version, timeout=25):
     raise RuntimeError('Flash writes completed, but the same Tab5 did not reconnect with verified firmware STATUS')
 
 
+def inspect_application(factory_data, application_data):
+    """Check the application against an already-validated complete factory image.
+
+    Incremental updates cannot install a new partition layout. Require exactly
+    the project's factory app partition, and no ambiguous second app partition.
+    The binary must equal the entire app payload, not merely a matching prefix.
+    """
+    applications = []
+    for at in range(0x8000, 0x8C00, 32):
+        magic, kind, subtype, offset, size = struct.unpack_from('<HBBII', factory_data, at)
+        if magic in (0xFFFF, 0xEBEB):
+            break
+        if magic != 0x50AA:
+            raise RuntimeError('Invalid factory partition table for application-only update')
+        if kind == 0:
+            applications.append((subtype, offset, size))
+    if applications != [(0, 0x10000, 0x500000)]:
+        raise RuntimeError('Application-only update requires one factory app partition at 0x10000')
+    _, offset, capacity = applications[0]
+    if not 24 <= len(application_data) <= capacity:
+        raise RuntimeError('Application image is empty, truncated, or exceeds its partition')
+    if application_data[0] != 0xE9 or struct.unpack_from('<H', application_data, 12)[0] != 18:
+        raise RuntimeError('Application image is not an ESP32-P4 image')
+    if application_data != factory_data[offset:]:
+        raise RuntimeError('Application image does not exactly match the validated factory app payload')
+    return offset
+
+
 def flash(args, image):
+    app_only = getattr(args, 'app_only', False)
+    if app_only and args.font_image:
+        raise RuntimeError('--app-only cannot be combined with --font-image')
     data = image.read_bytes()
     version = firmware_version(data)
     inspect_firmware(data, version)
+    write_image, write_offset = image, '0'
+    if app_only:
+        write_image = image.with_name('firmware.bin')
+        if not write_image.is_file():
+            raise RuntimeError('Build firmware.bin before using --app-only')
+        write_offset = hex(inspect_application(data, write_image.read_bytes()))
+        print('Validated application-only update: NVS, title fonts and settings will be preserved', flush=True)
     target = choose_port(list(list_ports.comports()), args.port)
     previous_serial = target.serial_number.upper() if is_application(target) else None
     port = enter_rom(target, serial, list_ports.comports)
@@ -139,7 +181,7 @@ def flash(args, image):
     run(base + ['--before', 'no-reset', '--after', 'no-reset',
                 'write-mem', '0x50110008', '0x4', '0x4'])
     write = base + ['--baud', '1500000', '--before', 'no-reset', '--after', 'no-reset',
-                    'write-flash', '0', image]
+                    'write-flash', write_offset, write_image]
     if args.font_image:
         write += ['0x510000', args.font_image]
     run(write)
