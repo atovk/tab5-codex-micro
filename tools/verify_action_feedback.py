@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify synthetic 1.2-second action-receipt pixels on Tab5 firmware 0.11.0.
+"""Verify synthetic 1.2-second action-receipt pixels on Tab5 firmware 0.11.1.
 
 One locked CDC session captures baseline, sent, unsent and expired frames. Only
 capture-gated PREVIEW_HOST fixtures are used: no touch, native HID input, live

@@ -2,6 +2,7 @@
 
 #include <M5GFX.h>
 #include "material_noise.h"
+#include "render_service.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -106,6 +107,7 @@ class Scanlines {
   template<typename Coverage>
   void coverSpan(int x, int y, int width, const Channels& source, Coverage coverage) {
     if (y < top || y >= bottom) return;
+    if ((y & 7) == 0) RenderService::checkpoint();
     const int end = std::min(right, x + width);
     x = std::max(left, x);
     width = end - x;
@@ -145,6 +147,7 @@ class Scanlines {
   template<typename Sampler>
   void shadeSpan(int x, int y, int width, Sampler sample) {
     if (y < top || y >= bottom) return;
+    if ((y & 7) == 0) RenderService::checkpoint();
     const int end = std::min(right, x + width);
     x = std::max(left, x);
     width = end - x;
@@ -185,6 +188,7 @@ class Scanlines {
 
   void row(int x, int y, int width, const Channels& channels) {
     if (y < top || y >= bottom) return;
+    if ((y & 7) == 0) RenderService::checkpoint();
     const int end = std::min(right, x + width);
     x = std::max(left, x);
     width = end - x;
@@ -397,7 +401,7 @@ inline void stroke(M5Canvas& canvas, const RoundShape& shape, float width,
 }
 
 inline void shadow(M5Canvas& canvas, const RoundShape& shape, float blur,
-                   uint8_t opacity, uint32_t rgb) {
+                   uint8_t opacity, uint32_t rgb, const RoundShape* opaqueCover = nullptr) {
   if (blur <= 0.f || !opacity) return;
   Scanlines rows(canvas);
   const Channels source = levels(rgb);
@@ -407,17 +411,34 @@ inline void shadow(M5Canvas& canvas, const RoundShape& shape, float blur,
     Span outer, inner;
     if (!shape.span(py, blur, outer)) continue;
     const int left = firstPixel(outer.left), right = endPixel(outer.right);
+    Span cover;
+    const bool hidden = opaqueCover && opaqueCover->span(py, -.5f, cover);
+    const int hiddenLeft = hidden ? firstPixel(cover.left) : right;
+    const int hiddenRight = hidden ? endPixel(cover.right) : right;
+    // The subsequent opaque face overwrites these pixels completely. Keep its
+    // AA fringe in the shadow calculation so the final image is unchanged.
+    auto visible = [&](int from, int to, auto paint) {
+      if (!hidden || hiddenRight <= from || hiddenLeft >= to) paint(from, to);
+      else {
+        if (from < hiddenLeft) paint(from, std::min(to, hiddenLeft));
+        if (hiddenRight < to) paint(std::max(from, hiddenRight), to);
+      }
+    };
     auto edge = [&](int from, int to) {
-      rows.coverSpan(from, y, to - from, source, [&](float px) {
-        const float t = clamp01(std::max(0.f, shape.distance(px, py)) / blur);
-        return uint8_t((1.f - t * t * (3.f - 2.f * t)) * opacity + .5f);
+      visible(from, to, [&](int first, int end) {
+        rows.coverSpan(first, y, end - first, source, [&](float px) {
+          const float t = clamp01(std::max(0.f, shape.distance(px, py)) / blur);
+          return uint8_t((1.f - t * t * (3.f - 2.f * t)) * opacity + .5f);
+        });
       });
     };
     if (shape.span(py, 0.f, inner)) {
       const int insideLeft = std::max(left, firstPixel(inner.left));
       const int insideRight = std::min(right, endPixel(inner.right));
       edge(left, insideLeft);
-      rows.blendSpan(insideLeft, y, insideRight - insideLeft, source, opacity);
+      visible(insideLeft, insideRight, [&](int first, int end) {
+        rows.blendSpan(first, y, end - first, source, opacity);
+      });
       edge(insideRight, right);
     } else edge(left, right);
   }
@@ -426,11 +447,17 @@ inline void shadow(M5Canvas& canvas, const RoundShape& shape, float blur,
 
 using detail::thresholdAt;
 using detail::pixelAt;
+// Optional exact silhouette of the opaque face that will cover a shadow.
+using OpaqueCover = detail::RoundShape;
 
 // Conventional, unswapped RGB565 input. M5GFX's native flat fill preserves the
 // exact color, current clip and optimized PSRAM row writes without any noise.
 inline void solid565(M5Canvas& canvas, int x, int y, int w, int h, uint16_t rgb565) {
-  if (w > 0 && h > 0) canvas.fillRect(x, y, w, h, rgb565);
+  if (w <= 0 || h <= 0) return;
+  for (int row = 0; row < h; row += 32) {
+    canvas.fillRect(x, y + row, w, std::min(32, h - row), rgb565);
+    RenderService::checkpoint();
+  }
 }
 
 // Explicit gradient origin/height keeps partial background repairs identical
@@ -621,14 +648,16 @@ inline void arc(M5Canvas& canvas, float cx, float cy, float radius,
 // Draw the shadow before its face. The smooth, finite falloff extends `blur`
 // pixels beyond the silhouette; callers include that extent in their damage.
 inline void shadowRoundRect(M5Canvas& canvas, float x, float y, float w, float h,
-                            float radius, float blur, uint8_t opacity, uint32_t rgb) {
+                            float radius, float blur, uint8_t opacity, uint32_t rgb,
+                            const OpaqueCover* opaqueCover = nullptr) {
   if (w <= 0.f || h <= 0.f) return;
-  detail::shadow(canvas, detail::RoundShape(x, y, w, h, radius), blur, opacity, rgb);
+  detail::shadow(canvas, detail::RoundShape(x, y, w, h, radius), blur, opacity, rgb, opaqueCover);
 }
 inline void shadowCircle(M5Canvas& canvas, float cx, float cy, float radius,
-                         float blur, uint8_t opacity, uint32_t rgb) {
+                         float blur, uint8_t opacity, uint32_t rgb,
+                         const OpaqueCover* opaqueCover = nullptr) {
   if (radius <= 0.f) return;
   shadowRoundRect(canvas, cx - radius, cy - radius, radius * 2, radius * 2,
-                  radius, blur, opacity, rgb);
+                  radius, blur, opacity, rgb, opaqueCover);
 }
 }  // namespace MaterialGradient

@@ -18,7 +18,7 @@ from verify_neon import Session, require
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.11.0"
+VERSION = "0.11.1"
 FIRMWARE = f"tab5-micro-{VERSION}"
 TIERS = ("unknown", "standard", "fast", "ultrafast")
 ENCODERS = ("unknown", "composer-navigation", "reasoning", "conversation-scroll", "custom")

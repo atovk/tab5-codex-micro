@@ -1,4 +1,5 @@
 #include "micro_games.h"
+#include "game_lifecycle.h"
 #include "material_gradient.h"
 #include "ui_font.h"
 #include "ui_text.h"
@@ -18,12 +19,12 @@ constexpr uint32_t BG = 0x080F1A, PANEL = 0x111E2E, EDGE = 0x24364B;
 constexpr uint32_t INK = 0xE7F4FA, MUTED = 0x8098AC, CYAN = 0x62E9F6;
 constexpr uint32_t GREEN = 0xA6F3A4, AMBER = 0xF5C77B, RED = 0xFF8796;
 enum class Game : uint8_t { Picker, Plane, Blocks, Dino };
-enum class Phase : uint8_t { Running, Paused, Over };
+using GameLifecycle::Phase;
 Game game = Game::Picker;
 Phase phase = Phase::Running;
-bool started = false, sceneChanged = true;
+bool sceneChanged = true;
 bool darkTheme = true;
-uint32_t lastTick = 0, previousPress = 0;
+uint32_t previousPress = 0;
 uint32_t gameTicks = 0, launchPress = 0;
 uint32_t renderedLanguageRevision = 0;
 const char* tr(const char* zh, const char* en) { return UiLocale::text(zh, en); }
@@ -34,6 +35,7 @@ Rect drawingClip {0, TOP, W, H - TOP};
 size_t dirtyCount = 0;
 struct Input { int16_t x = 0, y = 0; bool down = false, dark = true; uint32_t press = 0; };
 Input input;
+GameLifecycle::Policy lifecycle;
 portMUX_TYPE inputLock = portMUX_INITIALIZER_UNLOCKED;
 
 uint16_t color(uint32_t c) {
@@ -503,7 +505,7 @@ void drawDino(M5Canvas& c, uint32_t now) {
 }
 
 void resetGame(Game next, uint32_t now) {
-  game = next; phase = Phase::Running; lastTick = now; gameTicks = 0;
+  game = next; phase = Phase::Running; gameTicks = 0;
   launchPress = previousPress;
   if (game == Game::Plane) resetPlane(now);
   else if (game == Game::Blocks) resetBlocks(now);
@@ -577,16 +579,26 @@ void drawScene(M5Canvas& c, uint32_t now) {
 }  // namespace
 
 void init() {
-  game = Game::Picker; phase = Phase::Running; started = false; sceneChanged = true;
-  lastTick = previousPress = gameTicks = launchPress = 0; dirtyCount = 0;
+  game = Game::Picker; phase = Phase::Running; sceneChanged = true;
+  previousPress = gameTicks = launchPress = 0; dirtyCount = 0;
   renderedLanguageRevision = UiLocale::revision();
-  portENTER_CRITICAL(&inputLock); input = Input{}; portEXIT_CRITICAL(&inputLock);
+  portENTER_CRITICAL(&inputLock);
+  input = Input{};
+  lifecycle = GameLifecycle::Policy{};
+  portEXIT_CRITICAL(&inputLock);
+}
+void setActive(bool active) {
+  portENTER_CRITICAL(&inputLock);
+  if (active != lifecycle.active()) input.down = false;
+  lifecycle.setActive(active);
+  portEXIT_CRITICAL(&inputLock);
 }
 void setDarkTheme(bool dark) {
   portENTER_CRITICAL(&inputLock); input.dark = dark; portEXIT_CRITICAL(&inputLock);
 }
 void touch(int16_t x, int16_t y, bool pressed) {
   portENTER_CRITICAL(&inputLock);
+  if (!lifecycle.active()) pressed = false;
   if (pressed) { input.x = x; input.y = y; }
   if (pressed && !input.down) ++input.press;
   input.down = pressed;
@@ -598,18 +610,18 @@ bool render(M5Canvas& c, uint32_t now, bool force) {
     renderedLanguageRevision = UiLocale::revision(); sceneChanged = true;
   }
   Input p;
-  portENTER_CRITICAL(&inputLock); p = input; portEXIT_CRITICAL(&inputLock);
-  if (p.dark != darkTheme) { darkTheme = p.dark; sceneChanged = true; }
-  bool pressed = p.press != previousPress;
+  portENTER_CRITICAL(&inputLock);
+  p = input;
+  const auto lifecycleFrame = lifecycle.frame(now, game != Game::Picker, phase);
+  portEXIT_CRITICAL(&inputLock);
+  phase = lifecycleFrame.phase;
+  if (lifecycleFrame.redraw) sceneChanged = true;
+  bool pressed = !lifecycleFrame.discardInput && p.press != previousPress;
   previousPress = p.press;
-  if (!started) { started = true; lastTick = now; force = true; }
-  uint32_t elapsed = now - lastTick;
-  float dt = std::min<uint32_t>(elapsed, 80) * .001f;
-  lastTick = now;
-  // Returning from the chat screen never advances an unattended game.
-  if (force && elapsed > 500 && game != Game::Picker && phase == Phase::Running) {
-    phase = Phase::Paused; sceneChanged = true;
-  }
+  if (!lifecycleFrame.active) return false;
+  if (lifecycleFrame.discardInput) p.down = false;
+  if (p.dark != darkTheme) { darkTheme = p.dark; sceneChanged = true; }
+  float dt = lifecycleFrame.elapsedMs * .001f;
   if (pressed) {
     if (game == Game::Picker) {
       for (int i = 0; i < 3; ++i)
@@ -627,7 +639,7 @@ bool render(M5Canvas& c, uint32_t now, bool force) {
       nextCactusAt = now + 900;
     }
   }
-  if (game != Game::Picker && phase == Phase::Running) {
+  if (lifecycleFrame.canAdvance(game != Game::Picker, phase)) {
     ++gameTicks;
     // A tap that launched/restarted the game must not also move, rotate, or
     // jump. The next distinct touch press belongs to gameplay.

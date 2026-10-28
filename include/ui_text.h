@@ -2,6 +2,7 @@
 
 #include "ui_font.h"
 #include "title_font.h"
+#include "render_service.h"
 #include <algorithm>
 #include <cstdint>
 #include <limits>
@@ -73,6 +74,7 @@ inline Layout measure(const lgfx::IFont* font, const char* text) {
   uint32_t codepoint = 0;
   const char* cursor = text;
   while (next(cursor, codepoint, result.validUtf8)) {
+    RenderService::checkpoint();
     if (ignored(codepoint)) continue;
     const bool supported = codepoint <= 0xFFFF
         && font->updateFontMetric(&metrics, uint16_t(codepoint));
@@ -148,6 +150,7 @@ inline void drawSanitized(M5Canvas& canvas, const char* text, int32_t x, int32_t
         add(y, -int32_t(metrics.y_offset)), uint16_t(codepoint),
         &canvas.getTextStyle(), &metrics, filled);
     pen = add(pen, bounded(advance));
+    RenderService::checkpoint();
   }
   canvas.endWrite();
 }
@@ -173,6 +176,7 @@ inline Rect drawAt(M5Canvas& canvas, const char* text, int32_t x, int32_t y,
     // The explicit-font overload preserves the canvas's selected/runtime font.
     if (layout.validUtf8) canvas.drawString(text, x, y, font);
     else detail::drawSanitized(canvas, text, x, y, font);
+    RenderService::checkpoint();
   }
   return detail::absolute(layout.ink, x, y);
 }

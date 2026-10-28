@@ -6,6 +6,7 @@
 #include "micro_orientation.h"
 #include "title_font.h"
 #include "ui_locale.h"
+#include "micro_transport.h"
 #include <cmath>
 #include <Arduino.h>
 #include <algorithm>
@@ -39,11 +40,15 @@ bool titlesReceived=false;
 uint32_t titlesAt=0;
 bool configReceived=false, keysReceived=false, ambientReceived=false;
 bool chatReceived=false;
-bool actionPressDelivered[7]={};
+MicroTransport::KeyReceipts actionReceipts;
 uint32_t configAt=0, rgbRequests=0, stateErrors=0;
 uint32_t lightRequests=0, parseErrors=0, sentKeys=0;
 bool captureInput=false;
 uint32_t capturedInputs=0;
+bool diagnosticFrameActive=false, diagnosticsDeferred=false, usbWasMounted=false;
+uint32_t nativeRxAt=0;
+MicroTransport::Queue outgoing;
+MicroTransport::DeferredLines deferredLines;
 struct RxDiagnostics {
   uint32_t raw=0, output=0, feature=0, fallback=0, accepted=0, rejected=0, dropped=0;
   uint32_t rejectId=0, rejectSize=0, rejectChannel=0, rejectQueue=0;
@@ -108,16 +113,22 @@ int depth=0;
 bool inString=false, escaped=false;
 uint32_t rxAt=0;
 
-bool transmit(const String &line) {
-  if (!hid.ready()) return false;
-  String out=line; out+='\n';
-  for (size_t pos=0;pos<out.length();) {
-    uint8_t data[63]={2,0}; size_t n=std::min<size_t>(61,out.length()-pos);
-    data[1]=n; memcpy(data+2,out.c_str()+pos,n);
-    if (!hid.SendReport(reportId,data,sizeof(data),100)) return false;
-    pos+=n;
-  }
-  return true;
+bool transmit(const String &line,MicroTransport::Tag tag={}) {
+  return outgoing.enqueue(line.c_str(),line.length(),tag,millis());
+}
+bool inputsSuppressed() { return captureInput || diagnosticFrameActive; }
+void diagnosticLine(const String& line) {
+  if (diagnosticFrameActive || deferredLines.size())
+    deferredLines.push(line.c_str(),line.length());
+  else DebugSerial.println(line);
+}
+void flushDiagnosticLines() {
+  if (diagnosticFrameActive || !deferredLines.size()) return;
+  const int available=DebugSerial.availableForWrite();
+  if (available<=0) return;
+  const size_t count=std::min<size_t>(available,deferredLines.remaining());
+  deferredLines.consumed(DebugSerial.write(
+      reinterpret_cast<const uint8_t*>(deferredLines.data()),count));
 }
 uint32_t color(JsonVariant v) {
   if (v.is<const char*>()) { const char* s=v.as<const char*>(); return strtoul(s+(*s=='#'),nullptr,16)&0xffffff; }
@@ -245,33 +256,65 @@ bool readChat(JsonDocument& doc,HostFeedback::Chat& result,bool& available) {
   result=next;
   return true;
 }
-void actionFeedback(const MicroUI::Event& event,bool sent) {
+int actionIndex(const MicroUI::Event& event) {
   if (!event.key || event.joystick || event.action>1 || strlen(event.key)!=5
       || strncmp(event.key,"ACT",3) || event.key[3]<'0' || event.key[3]>'1'
-      || event.key[4]<'0' || event.key[4]>'9') return;
+      || event.key[4]<'0' || event.key[4]>'9') return -1;
   const int index=(event.key[3]-'0')*10+event.key[4]-'0'-6;
-  if (index<0 || index>=7) return;
-  if (event.action==1) actionPressDelivered[index]=sent;
-  model.actionFeedbackAt[index]=std::max<uint32_t>(1,millis());
-  model.actionFeedbackSent[index]=sent && actionPressDelivered[index];
-  if (event.action==0) actionPressDelivered[index]=false;
+  return index>=0 && index<7 ? index : -1;
+}
+void showReceipt(int index,MicroTransport::Receipt receipt) {
+  model.actionFeedbackAt[index]=receipt==MicroTransport::Receipt::Clear ? 0 : std::max<uint32_t>(1,millis());
+  model.actionFeedbackSent[index]=receipt==MicroTransport::Receipt::Submitted;
+}
+void actionFeedback(const MicroUI::Event& event,bool sent) {
+  const int index=actionIndex(event);
+  if (index<0) return;
+  showReceipt(index,sent ? actionReceipts.submitted(uint8_t(index+6),event.action)
+                         : actionReceipts.failed(uint8_t(index+6)));
+}
+void serviceTransmit() {
+  const auto* message=outgoing.next(millis());
+  const uint16_t dropped=outgoing.takeDroppedKeys();
+  for (unsigned index=0;index<7;++index) if (dropped&(1u<<(index+6)))
+    showReceipt(index,actionReceipts.failed(uint8_t(index+6)));
+  if (!message || !tud_mounted() || !hid.ready()) return;
+  uint8_t report[63]={2,0};
+  const size_t count=std::min<size_t>(61,message->length-message->offset);
+  report[1]=count; memcpy(report+2,message->bytes+message->offset,count);
+  // The Arduino wrapper waits for a completion semaphore even with timeout=0,
+  // then can report failure after actually submitting the packet. Use the
+  // underlying nonblocking API so a retry can never duplicate that packet.
+  // This interface has exactly one input-report producer: this scheduler.
+  if (!tud_hid_n_report(0,reportId,report,sizeof(report))) { outgoing.failed(); return; }
+  MicroTransport::Message completed;
+  if (!outgoing.submitted(count,completed) || completed.tag.kind==MicroTransport::Kind::Response) return;
+  ++sentKeys;
+  if (completed.tag.kind==MicroTransport::Kind::Key && completed.tag.key>=0) {
+    MicroUI::Event event;
+    event.key=MicroTransport::keys[completed.tag.key]; event.action=completed.tag.action;
+    actionFeedback(event,true);
+  }
 }
 void process() {
   JsonDocument req;
   if (deserializeJson(req,json,jsonLen)) { ++parseErrors; return; }
   const char *method=req["method"]|"";
   if (!*method) return;
+  nativeRxAt=millis();
   strlcpy(lastMethod,method,sizeof(lastMethod));
   JsonDocument response;
   response["id"]=req["id"];
   if (!strcmp(method,"device.status")) {
+    hostSeen=true;
     JsonObject r=response["result"].to<JsonObject>();
-    r["version"]="tab5-micro-0.11.0"; r["profile_index"]=0; r["layer_index"]=0;
+    r["version"]="tab5-micro-0.11.1"; r["profile_index"]=0; r["layer_index"]=0;
     int battery=M5.Power.getBatteryLevel();
     if (battery>=0 && battery<=100) r["battery"]=battery;
     r["is_charging"]=M5.Power.isCharging()==m5::Power_Class::is_charging_t::is_charging;
   } else if (!strcmp(method,"sys.version")) {
-    response["result"]["version"]="tab5-micro-0.11.0";
+    hostSeen=true;
+    response["result"]["version"]="tab5-micro-0.11.1";
   } else if (!strcmp(method,"v.oai.thstatus")) {
     for (JsonObject item:req["params"].as<JsonArray>()) {
       int i=item["id"]|-1; if (i<0 || i>5) continue;
@@ -336,46 +379,78 @@ extern "C" bool tab5_hid_raw_report(uint8_t instance,uint8_t id,uint8_t type,
 namespace MicroLink {
 void begin() { frames=xQueueCreate(64,sizeof(Frame)); hid.begin(); }
 void poll() {
-  if (!tud_mounted()) {
-    if (hostSeen) {
+  const bool mounted=tud_mounted();
+  if (!mounted) {
+    if (usbWasMounted) {
+      outgoing.disconnect();
+      if (frames) xQueueReset(frames);
+      actionReceipts.reset();
       for (int i=0;i<7;++i) {
-        actionPressDelivered[i]=false;
         model.actionFeedbackAt[i]=0; model.actionFeedbackSent[i]=false;
       }
     }
-    hostSeen=false; reset(); keysReceived=ambientReceived=false;
+    hostSeen=false; reset(); keysReceived=ambientReceived=false; titlesReceived=false;
     configReceived=chatReceived=false;
     model.hostChat={};
     model.hostLights={};
   }
-  if (!hostSeen || !titlesReceived || millis()-titlesAt>7500) model.titlesFresh=false;
-  model.connected=tud_mounted()&&hostSeen;
-  model.hostConfig.fresh=configReceived && model.connected && millis()-configAt<=7500;
-  model.hostChat.fresh=chatReceived && model.connected && millis()-configAt<=7500;
+  usbWasMounted=mounted;
   if (jsonLen && millis()-rxAt>2000) reset();
   Frame f;
-  while (frames && xQueueReceive(frames,&f,0)==pdTRUE) {
+  // Bound work even while the desktop floods state updates. Responses are
+  // queued, so receiving a request never waits for an IN endpoint to drain.
+  unsigned budget=4;
+  while (mounted && budget-- && frames && xQueueReceive(frames,&f,0)==pdTRUE) {
     rxAt=millis(); for (int i=0;i<f.data[1];++i) receive(f.data[i+2]);
+  }
+  model.usbMounted=mounted;
+  model.nativeSessionSeen=mounted && hostSeen;
+  model.connected=model.nativeSessionSeen;
+  model.titlesFresh=mounted && titlesReceived && millis()-titlesAt<=7500;
+  model.hostConfig.fresh=configReceived && mounted && millis()-configAt<=7500;
+  model.hostChat.fresh=chatReceived && mounted && millis()-configAt<=7500;
+  model.metadataFresh=model.hostConfig.fresh || model.hostChat.fresh;
+  serviceTransmit();
+  flushDiagnosticLines();
+  if (diagnosticsDeferred && !diagnosticFrameActive && !deferredLines.size()) {
+    diagnosticsDeferred=false; diagnostics();
   }
 }
 void send(const MicroUI::Event &event) {
-  if (!model.connected && !captureInput) { actionFeedback(event,false); return; }
+  if (!model.connected && !inputsSuppressed()) { actionFeedback(event,false); return; }
   JsonDocument doc;
-  if (event.joystick) { doc["m"]="v.oai.rad"; doc["p"]["a"]=event.angle; doc["p"]["d"]=event.distance; }
-  else if (event.key) { doc["m"]="v.oai.hid"; doc["p"]["k"]=event.key; doc["p"]["act"]=event.action; }
+  MicroTransport::Tag tag;
+  if (event.joystick) {
+    doc["m"]="v.oai.rad"; doc["p"]["a"]=event.angle; doc["p"]["d"]=event.distance;
+    tag.kind=MicroTransport::Kind::Stick;
+    tag.stickZone=MicroTransport::stickZone(event.angle,event.distance);
+  }
+  else if (event.key) {
+    doc["m"]="v.oai.hid"; doc["p"]["k"]=event.key; doc["p"]["act"]=event.action;
+    tag.kind=MicroTransport::Kind::Key; tag.key=MicroTransport::keyIndex(event.key);
+    tag.action=event.action;
+    if (tag.key<0) { actionFeedback(event,false); return; }
+  }
   else return;
   String out; serializeJson(doc,out);
-  if (captureInput) {
+  if (inputsSuppressed()) {
     ++capturedInputs;
-    DebugSerial.print("INPUT_EVENT "); DebugSerial.println(out);
+    diagnosticLine(String("INPUT_EVENT ")+out);
   } else {
-    const bool sent=transmit(out);
-    if (sent) ++sentKeys;
-    actionFeedback(event,sent);
+    const int index=actionIndex(event);
+    if (index>=0 && event.action==1)
+      showReceipt(index,actionReceipts.begin(uint8_t(index+6)));
+    if (!transmit(out,tag)) actionFeedback(event,false);
   }
 }
-void captureInputs(bool enabled) { captureInput=enabled; }
-bool capturingInputs() { return captureInput; }
+void captureInputs(bool enabled) {
+  captureInput=enabled; outgoing.suspendInputs(inputsSuppressed());
+}
+bool capturingInputs() { return inputsSuppressed(); }
+void setDiagnosticFrameActive(bool active) {
+  diagnosticFrameActive=active; outgoing.suspendInputs(inputsSuppressed());
+}
+bool diagnosticTextPending() { return deferredLines.size()!=0; }
 bool previewLights(const char *payload) {
   if (!captureInput) return false;
   JsonDocument doc;
@@ -449,9 +524,9 @@ bool applyTitles(const char *payload) {
       if (uint8_t(next.slots[i].title[n])<32) next.slots[i].title[n]=' ';
     strlcpy(next.slots[i].identity,key,sizeof(next.slots[i].identity));
   }
-  next.titlesFresh=available && hostSeen && tud_mounted();
+  next.titlesFresh=available && tud_mounted();
   model=next; titlesReceived=available; titlesAt=millis();
-  DebugSerial.printf("TITLES_OK %lu\n",(unsigned long)doc["seq"].as<uint32_t>());
+  diagnosticLine(String("TITLES_OK ")+String(doc["seq"].as<uint32_t>()));
   return true;
 }
 bool applyHostConfig(const char *payload) {
@@ -461,11 +536,11 @@ bool applyHostConfig(const char *payload) {
   bool available=false,chatAvailable=false;
   if (deserializeJson(doc,payload) || !readConfig(doc,next,available)
       || !readChat(doc,nextChat,chatAvailable)) return false;
-  next.fresh=available && hostSeen && tud_mounted();
-  nextChat.fresh=chatAvailable && hostSeen && tud_mounted();
+  next.fresh=available && tud_mounted();
+  nextChat.fresh=chatAvailable && tud_mounted();
   model.hostConfig=next; configReceived=available; configAt=millis();
   model.hostChat=nextChat; chatReceived=chatAvailable;
-  DebugSerial.printf("HOST_CONFIG_OK %lu\n",(unsigned long)doc["seq"].as<uint32_t>());
+  diagnosticLine(String("HOST_CONFIG_OK ")+String(doc["seq"].as<uint32_t>()));
   return true;
 }
 bool previewHostState(const char *payload) {
@@ -496,9 +571,10 @@ bool previewHostState(const char *payload) {
   return true;
 }
 void diagnostics() {
+  if (diagnosticFrameActive || deferredLines.size()) { diagnosticsDeferred=true; return; }
   RxDiagnostics snapshot;
   portENTER_CRITICAL(&rxLock); snapshot=rx; portEXIT_CRITICAL(&rxLock);
-  JsonDocument d; d["firmware"]="tab5-micro-0.11.0"; d["usb_ready"]=hid.ready(); d["usb_mounted"]=tud_mounted();
+  JsonDocument d; d["firmware"]="tab5-micro-0.11.1"; d["usb_ready"]=hid.ready(); d["usb_mounted"]=tud_mounted();
   d["theme"]=MicroUI::theme()==MicroUI::Theme::Dark ? "dark" : "light";
   d["language"]=UiLocale::english() ? "en" : "zh";
   d["uptime_ms"]=millis();
@@ -506,6 +582,7 @@ void diagnostics() {
   d["title_font"]["glyphs"]=UiTitleFont::glyphCount();
   d["title_font"]["asset_bytes"]=UiTitleFont::assetBytes();
   d["settings_open"]=MicroUI::settingsOpen();
+  d["playing"]=MicroUI::playing();
   d["brightness_percent"]=MicroUI::brightness();
   d["brightness"]=DeviceSettings::backlight(MicroUI::brightness());
   d["settings_pending"]=DeviceSettings::pending();
@@ -528,6 +605,10 @@ void diagnostics() {
   d["orientation"]["changes"]=orientation.changes;
   d["orientation"]["read_max_us"]=orientation.readMaxUs; d["orientation"]["sampled_at_ms"]=orientation.sampledAt;
   d["host_seen"]=hostSeen; d["rpc_count"]=model.rpc_count; d["lighting_requests"]=lightRequests;
+  d["native_session_seen"]=model.nativeSessionSeen;
+  d["native_rx_age_ms"]=hostSeen ? int32_t(millis()-nativeRxAt) : -1;
+  d["native_liveness"]="not-observable; event-only protocol";
+  d["metadata_fresh"]=model.metadataFresh;
   d["rgb_requests"]=rgbRequests; d["state_errors"]=stateErrors;
   const auto& displayState=state();
   d["host_feedback"]["config_fresh"]=displayState.hostConfig.fresh;
@@ -557,7 +638,21 @@ void diagnostics() {
       HostFeedback::classify(displayState.hostLights,displayState.connected));
   d["host_feedback"]["source"]="local-config-defaults; optional-explicit-chat-desktop-ipc";
   d["last_method"]=lastMethod; d["dropped"]=snapshot.dropped; d["parse_errors"]=parseErrors; d["inputs_tx"]=sentKeys;
-  d["input_capture"]=captureInput; d["captured_inputs"]=capturedInputs;
+  d["input_capture"]=inputsSuppressed(); d["captured_inputs"]=capturedInputs;
+  d["diagnostic_frame_active"]=diagnosticFrameActive;
+  d["diagnostic_lines_pending"]=deferredLines.size();
+  d["diagnostic_lines_dropped"]=deferredLines.dropped();
+  const auto& tx=outgoing.stats();
+  auto txStatus=d["hid_tx"].to<JsonObject>();
+  txStatus["receipt"]="usb-submitted; desktop execution unconfirmed";
+  txStatus["pending"]=outgoing.size(); txStatus["held_keys"]=outgoing.heldKeys();
+  txStatus["stick_active"]=outgoing.stickActive();
+  txStatus["recovery_pending"]=outgoing.recoveryPending();
+  txStatus["queued"]=tx.queued; txStatus["submitted"]=tx.submitted;
+  txStatus["reports"]=tx.reports; txStatus["failed"]=tx.failed;
+  txStatus["coalesced"]=tx.coalesced; txStatus["dropped"]=tx.dropped;
+  txStatus["stale"]=tx.stale; txStatus["recoveries"]=tx.recoveries;
+  txStatus["disconnects"]=tx.disconnects;
   d["lighting_preview"]=lightingPreview; d["effects_frozen"]=MicroUI::effectsAreFrozen();
   d["titles_fresh"]=model.titlesFresh;
   int titleCount=0; for (const auto &slot:model.slots) if (*slot.title) ++titleCount;
@@ -587,6 +682,14 @@ void diagnostics() {
   d["ui_profile"]["title_draw_us"]=ui.titleDraw;
   d["ui_profile"]["title_present_us"]=ui.titlePresent;
   d["ui_profile"]["title_frames"]=ui.titleFrames;
+  d["ui_profile"]["full_body_us"]=ui.fullBody;
+  d["ui_profile"]["full_header_us"]=ui.fullHeader;
+  d["ui_profile"]["full_content_us"]=ui.fullContent;
+  d["ui_profile"]["full_present_us"]=ui.fullPresent;
+  d["ui_profile"]["full_frames"]=ui.fullFrames;
+  d["ui_profile"]["full_total_us"]=ui.fullTotal;
+  d["ui_profile"]["render_service_calls"]=ui.serviceCalls;
+  d["ui_profile"]["render_service_gap_us"]=ui.serviceGap;
   for (uint8_t i=0;i<7;++i) {
     const auto title=MicroUI::titleScrollStatus(i);
     auto entry=d["title_scroll"][i].to<JsonObject>();

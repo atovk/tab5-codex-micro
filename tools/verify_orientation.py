@@ -19,8 +19,8 @@ from verify_neon import Session, require
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "artifacts/orientation-0.11.0.json"
-FIRMWARE = "tab5-micro-0.11.0"
+OUTPUT = ROOT / "artifacts/orientation-0.11.1.json"
+FIRMWARE = "tab5-micro-0.11.1"
 RAW_POINTS = ((0, 0), (719, 0), (0, 1279), (719, 1279), (359, 639))
 ENCODER = (244, 352)  # Same logical center as verify_controls.py.
 

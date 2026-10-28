@@ -21,7 +21,7 @@ from verify_device import read_line, rgb565_image
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIRMWARE = "tab5-micro-0.11.0"
+FIRMWARE = "tab5-micro-0.11.1"
 FIXTURES = [
     {"c": 0x304FFE, "b": 1.0, "e": 1, "s": 0.0},  # Running, steady.
     {"c": 0xFFFFFF, "b": 1.0, "e": 4, "s": 0.4},  # Idle, selected/pulsing.
@@ -244,7 +244,7 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
                 frozen = session.status()
                 require(frozen["ui_profile"]["neon_frames"] == initial_frames,
                         "Frozen animation continued to step")
-                capture = session.screenshot(directory / f"tab5-neon-status-demo-{theme}-0.11.0.png")
+                capture = session.screenshot(directory / f"tab5-neon-status-demo-{theme}-0.11.1.png")
                 report["captures"].append(capture)
                 report["checks"][f"frozen_{theme}"] = current
 
@@ -255,14 +255,14 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
             for attempt, delay in enumerate((.197, .311, .467), 1):
                 # Each command renews the capture watchdog before a framebuffer.
                 session.command("FX LIVE", "FX LIVE")
-                first = directory / f"tab5-neon-live-demo-{attempt}-a-0.11.0.png"
-                second = directory / f"tab5-neon-live-demo-{attempt}-b-0.11.0.png"
+                first = directory / f"tab5-neon-live-demo-{attempt}-a-0.11.1.png"
+                second = directory / f"tab5-neon-live-demo-{attempt}-b-0.11.1.png"
                 report["captures"].append(session.screenshot(first))
                 time.sleep(delay)
                 session.command("FX LIVE", "FX LIVE")
                 report["captures"].append(session.screenshot(second))
                 live = compare_live(first, second, directory /
-                                    f"tab5-neon-live-demo-diff-{attempt}-0.11.0.png")
+                                    f"tab5-neon-live-demo-diff-{attempt}-0.11.1.png")
                 if live["changed_card_pixels"][0] > 0:
                     break
             require(live is not None and live["changed_card_pixels"][0] > 0,
@@ -405,7 +405,7 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, nargs="?",
-                        default=ROOT / "artifacts/neon-qa-0.11.0.json")
+                        default=ROOT / "artifacts/neon-qa-0.11.1.json")
     parser.add_argument("--port")
     parser.add_argument("--timeout", type=float, default=10)
     parser.add_argument("--stress-seconds", type=float, default=3)

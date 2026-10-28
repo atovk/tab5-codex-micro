@@ -11,6 +11,8 @@
 #include "ui_locale.h"
 #include "agent_status.h"
 #include "agent_neon.h"
+#include "render_service.h"
+#include "deferred_setting.h"
 
 #include <M5Unified.h>
 #include <Preferences.h>
@@ -44,7 +46,7 @@ const Materials* material = &silver;
 uint32_t INK = silver.ink;
 uint32_t MUTED = silver.secondary;
 Theme renderedTheme = Theme::Light;
-Theme persistedTheme = Theme::Light;
+DeferredSetting<Theme> themePersistence(Theme::Light);
 uint32_t appliedThemeRevision = 0;
 uint32_t appliedLocaleRevision = 0;
 uint32_t appliedSoundRevision = 0;
@@ -57,7 +59,7 @@ uint8_t headerHeld = 0;
 uint8_t previousHeaderHeld = 0;
 Preferences preferences;
 bool preferencesReady = false;
-uint32_t persistedRevision = 0;
+
 constexpr int DIAL_X = 126, DIAL_Y = 236, DIAL_W = 236, DIAL_H = 236;
 constexpr int STICK_X = 680, STICK_Y = 238, STICK_W = 244, STICK_H = 228;
 constexpr int CENTER_X = 208, CENTER_Y = 326, CENTER_W = 72, CENTER_H = 64;
@@ -68,6 +70,8 @@ uint16_t* stickBackdrop = nullptr;
 uint16_t* longPressCenter = nullptr;
 uint16_t* counterBackdrop = nullptr;
 bool backdropsReady = false;
+Theme backdropTheme = Theme::Light;
+uint32_t backdropLocale = 0;
 uint32_t fxLastStep = 0, lastInteraction = 0;
 uint8_t fxCursor = 0;
 uint8_t animatedSlots = 0;
@@ -357,10 +361,12 @@ void metalFace(float cx, float cy, float radius, uint32_t face, float bevel = 2.
 
 void keycap(int x, int y, int w, int h, bool pressed = false, uint32_t accent = 0) {
   paintBody(x, y, w, h);
-  // The entire soft shadow stays inside the unchanged touch/dirty rectangle.
-  MaterialGradient::shadowRoundRect(canvas, x + 8, y + 8, w - 16, h - 16,
-      18, 7, pressed ? 30 : 58, material->deepShadow);
+  // Only the exposed shadow matters; the opaque face replaces its interior.
   const int drop = pressed ? 3 : 0;
+  const MaterialGradient::OpaqueCover face(x + 3, y + 2 + drop,
+      w - 6, h - 8 - drop, 19);
+  MaterialGradient::shadowRoundRect(canvas, x + 8, y + 8, w - 16, h - 16,
+      18, 7, pressed ? 30 : 58, material->deepShadow, &face);
   uint32_t top = pressed ? material->keyPressed : material->keyTop;
   uint32_t bottom = pressed ? mix(material->keyPressed, material->keyBottom, .35f) : material->keyBottom;
   if (accent) { top = mix(top, accent, pressed ? .10f : .018f); bottom = mix(bottom, accent, .04f); }
@@ -373,8 +379,9 @@ void keycap(int x, int y, int w, int h, bool pressed = false, uint32_t accent = 
 
 void tray(int x, int y, int w, int h) {
   paintBody(x, y, w, h);
+  const MaterialGradient::OpaqueCover face(x + 1, y + 2, w - 2, h - 5, 26);
   MaterialGradient::shadowRoundRect(canvas, x + 3, y + 4, w - 6, h - 7,
-      26, 3, 35, material->deepShadow);
+      26, 3, 35, material->deepShadow, &face);
   MaterialGradient::solidRoundRect565(canvas, x + 1, y + 2, w - 2, h - 5,
       26, surface565(material->trayTop));
   MaterialGradient::strokeRoundRect(canvas, x + 1, y + 2, w - 2, h - 5,
@@ -418,7 +425,8 @@ void drawDialCenter(bool pressed, bool longPress) {
 void drawDialMaterial(bool pressed, bool longPress = false) {
   constexpr int cx = 244, cy = 352;
   paintTray(DIAL_X, DIAL_Y, DIAL_W, DIAL_H);
-  MaterialGradient::shadowCircle(canvas, cx, cy + 4, 106, 7, 100, material->deepShadow);
+  const MaterialGradient::OpaqueCover face(cx - 106, cy - 106, 212, 212, 106);
+  MaterialGradient::shadowCircle(canvas, cx, cy + 4, 106, 7, 100, material->deepShadow, &face);
   metalFace(cx, cy, 106, mix(material->metalTop, material->metalBottom, .50f), 3.f);
   MaterialGradient::strokeCircle(canvas, cx, cy, 106, .9f,
       mix(material->metalTop, material->highlight, .55f));
@@ -456,6 +464,9 @@ void drawStickMaterial() {
 }
 
 void rebuildBackdrops() {
+  if (backdropsReady && backdropTheme == renderedTheme
+      && backdropLocale == UiLocale::revision()) return;
+  const uint32_t locale = UiLocale::revision();
   backdropsReady = false;
   drawDialMaterial(false);
   saveBackdrop(dialBackdrops[0], DIAL_X, DIAL_Y, DIAL_W, DIAL_H);
@@ -468,15 +479,24 @@ void rebuildBackdrops() {
   drawStickMaterial();
   saveBackdrop(stickBackdrop, STICK_X, STICK_Y, STICK_W, STICK_H);
   backdropsReady = true;
+  backdropTheme = renderedTheme;
+  backdropLocale = locale;
+}
+
+void pushRegion(int x, int y, int w, int h) {
+  // P4 rotates pixels in software. Bound large copies and service input between
+  // strips, while the outer startWrite/endWrite still batches cache writeback.
+  const int rows = w * h > W * 64 ? 32 : h;
+  for (int row = 0; row < h; row += rows) {
+    M5.Display.setClipRect(x, y + row, w, std::min(rows, h - row));
+    canvas.pushSprite(0, 0);
+    RenderService::checkpoint();
+  }
+  M5.Display.clearClipRect();
 }
 
 void present(int x, int y, int w, int h) {
-  // pushSprite honors the destination clip before entering P4's software
-  // rotation/copy loop. Keeping the full canvas retains screenshot support.
-  if (forceFullPresent || displayInvalidated) return;
-  M5.Display.setClipRect(x, y, w, h);
-  canvas.pushSprite(0, 0);
-  M5.Display.clearClipRect();
+  if (!forceFullPresent && !displayInvalidated) pushRegion(x, y, w, h);
 }
 
 constexpr int SLIDER_LEFT = 320, SLIDER_RIGHT = 1120;
@@ -614,7 +634,9 @@ void drawHostSignal(const State& state) {
   const uint32_t ambient = zoneColor(state.hostLights.ambient);
   circleGradient(432, 49, 3, keys, keys);
   circleGradient(446, 49, 3, ambient, ambient);
-  text(localizedSignalLabel(signal), 462, 41, MUTED, UiFont::sans16());
+  char label[96];
+  snprintf(label,sizeof(label),"%s%s",tr("最近：", "Last: "),localizedSignalLabel(signal));
+  text(label, 462, 41, MUTED, UiFont::sans16());
 }
 
 void drawHeader(const State& state) {
@@ -624,11 +646,11 @@ void drawHeader(const State& state) {
   center(settingsMode ? tr("设置", "Settings") : state.lightingPreview ? tr("状态演示", "Preview") : playMode ? tr("游戏", "Play") : tr("控制台", "Console"),
          340, 49, INK, UiFont::sans24());
   drawHostSignal(state);
-  const bool synced = state.connected && state.rpc_count;
+  const bool synced = state.usbMounted;
   uint32_t connection = synced ? (dark() ? 0x9DD6BB : 0x3F8065) : MUTED;
   circleGradient(687, 49, 4, connection, connection);
-  text(synced ? tr("主机已连接", "Connected") : tr("等待主机", "Waiting for host"), 704, 39,
-       connection, UiLocale::english() && !synced ? UiFont::sans16() : UiFont::sans20());
+  text(synced ? tr("USB已连接", "USB connected") : tr("USB未连接", "USB offline"), 704, 41,
+       connection, UiFont::sans16());
   keycap(844, 13, 88, 72, headerHeld == 3);
   UiIcons::draw(canvas, UiIcons::Icon::Gear, 888, 49 + (headerHeld == 3 ? 2 : 0), 32,
                 settingsMode ? material->accent : INK);
@@ -744,38 +766,11 @@ UiIcons::Icon actionIcon(HostFeedback::Action action, int index) {
 
 const char* actionCaption(const State& state, int index, HostFeedback::Action action) {
   using A = HostFeedback::Action;
-  const bool fast = action == A::Fast || (index == 0 && action == A::Unknown);
-  if (fast) {
-    if (!state.connected) return tr("桌面离线", "Host offline");
-    if (state.hostChat.fresh) {
-      switch (state.hostChat.speed) {
-        case HostFeedback::Speed::Fast: return tr("快速·已开启", "Fast: on");
-        case HostFeedback::Speed::UltraFast: return tr("极速·已开启", "Ultra: on");
-        case HostFeedback::Speed::Standard: return tr("快速·已关闭", "Fast: off");
-        case HostFeedback::Speed::Default: return tr("聊天默认", "Chat default");
-        default: return tr("聊天档位未知", "Speed unknown");
-      }
-    }
-    return tr("聊天未同步", "Not synced");
-  }
-  if (action==A::Plan && state.hostChat.fresh) {
-    switch (state.hostChat.mode) {
-      case HostFeedback::Mode::Plan: return tr("计划·已开启", "Plan: on");
-      case HostFeedback::Mode::Default: return tr("计划·已关闭", "Plan: off");
-      default: return tr("聊天模式未知", "Mode unknown");
-    }
-  }
-  const bool approve=action==A::Approve || (index==1 && action==A::Unknown);
-  if (approve) {
-    if (!state.hostChat.fresh) return tr("权限未同步", "Access unknown");
-    switch (state.hostChat.permission) {
-      case HostFeedback::Permission::FullAccess: return "Full access";
-      case HostFeedback::Permission::WorkspaceWrite: return tr("工作区权限", "Workspace write");
-      case HostFeedback::Permission::ReadOnly: return tr("只读权限", "Read only");
-      case HostFeedback::Permission::Custom: return tr("自定义权限", "Custom access");
-      default: return tr("权限未同步", "Access unknown");
-    }
-  }
+  // Tracked metadata cannot prove which focused desktop composer receives HID.
+  // Never present tracked Fast/Plan/access as state of these native shortcuts.
+  if (action == A::Fast || action == A::Plan || action == A::Approve
+      || (action == A::Unknown && (index == 0 || index == 1)))
+    return tr("桌面快捷键", "Desktop shortcut");
   const bool voice = action == A::Voice || (index == 4 && action == A::Unknown);
   if (voice) {
     const auto signal = HostFeedback::classify(state.hostLights, state.connected);
@@ -804,32 +799,19 @@ void drawMappedAction(const State& state, int index, int layoutIndex,
   const bool voice = action == HostFeedback::Action::Voice
       || (index == 4 && action == HostFeedback::Action::Unknown);
   const bool unassigned = action == HostFeedback::Action::None;
-  const bool modeToggle=action==HostFeedback::Action::Fast || action==HostFeedback::Action::Plan
-      || (index==0 && action==HostFeedback::Action::Unknown);
-  const bool permissionCaption=action==HostFeedback::Action::Approve
-      || (index==1 && action==HostFeedback::Action::Unknown);
-  const bool persistentCaption=modeToggle || permissionCaption;
-  const bool actualActive=state.hostChat.fresh && (action==HostFeedback::Action::Plan
-      ? state.hostChat.mode==HostFeedback::Mode::Plan
-      : modeToggle && (state.hostChat.speed==HostFeedback::Speed::Fast
-          || state.hostChat.speed==HostFeedback::Speed::UltraFast));
   const uint8_t receipt = active ? 0 : actionReceipt(state, index, millis());
   const uint32_t accent = receipt == 2 ? (dark() ? 0xE9A6A8 : 0xA84C51)
-      : receipt || actualActive ? material->accent : actionAccent(layoutIndex);
-  keycap(x, 542, w, 150, active, active || receipt || actualActive ? accent : 0);
+      : receipt ? material->accent : actionAccent(layoutIndex);
+  keycap(x, 542, w, 150, active, active || receipt ? accent : 0);
   const int drop = active ? 2 : 0;
   const uint32_t ink = unassigned ? MUTED : INK;
   UiIcons::draw(canvas, actionIcon(action, index), cx, 588 + drop, 32,
-      active || actualActive ? accent : ink);
-  if (persistentCaption && receipt)
-    center(receipt==1 ? tr("已发送", "Sent") : tr("发送未确认", "Unconfirmed"),cx,557+drop,accent,UiFont::sans16());
+      active ? accent : ink);
   centerFitted(active && voice ? tr("已按住", "Held") : actionLabel(action, fallback),
       cx, 635 + drop, w - 24, ink, UiFont::sans28());
-  const uint32_t captionInk=permissionCaption && state.hostChat.fresh
-      && state.hostChat.permission==HostFeedback::Permission::FullAccess
-      ? (dark() ? 0xDAB785 : 0x876027) : actualActive ? material->accent : MUTED;
-  center(receipt && !persistentCaption ? receipt == 1 ? tr("已发送", "Sent") : tr("发送未确认", "Unconfirmed") : actionCaption(state, index, action),
-      cx, 668 + drop, receipt && !persistentCaption ? accent : captionInk, UiFont::sans16());
+  center(receipt ? receipt == 1 ? tr("USB已提交", "USB submitted") : tr("USB未发送", "USB not sent")
+                 : actionCaption(state, index, action),
+      cx, 668 + drop, receipt ? accent : MUTED, UiFont::sans16());
   renderedActionFeedback[index] = receipt;
 }
 
@@ -953,11 +935,32 @@ void drawEncoderConfig(const State& state) {
 void drawChatFeedback(const State& state) {
   const auto& chat=state.hostChat;
   paintTray(710,210,184,26);
-  const char* plan=!chat.fresh ? tr("计划状态未同步", "Plan not synced")
-      : chat.mode==HostFeedback::Mode::Plan ? tr("计划·已开启", "Plan: on")
-      : chat.mode==HostFeedback::Mode::Default ? tr("计划·已关闭", "Plan: off") : tr("聊天模式未知", "Mode unknown");
-  center(plan,802,223,chat.fresh && chat.mode==HostFeedback::Mode::Plan ? material->accent : MUTED,
-      UiFont::sans20());
+  center(tr("桌面操控", "Desktop control"),802,223,MUTED,UiFont::sans20());
+  paintBody(28,500,1224,36);
+  center(tr("指定聊天设置", "Tracked settings"),152,518,MUTED,UiFont::sans16());
+  const char* speed=!chat.fresh ? tr("快速：未知", "Fast: unknown")
+      : chat.speed==HostFeedback::Speed::Fast ? tr("快速：开启", "Fast: on")
+      : chat.speed==HostFeedback::Speed::UltraFast ? tr("极速：开启", "Ultra: on")
+      : chat.speed==HostFeedback::Speed::Standard ? tr("快速：关闭", "Fast: off")
+      : chat.speed==HostFeedback::Speed::Default ? tr("快速：默认", "Fast: default")
+      : tr("快速：未知", "Fast: unknown");
+  const char* mode=!chat.fresh ? tr("计划：未知", "Plan: unknown")
+      : chat.mode==HostFeedback::Mode::Plan ? tr("计划：开启", "Plan: on")
+      : chat.mode==HostFeedback::Mode::Default ? tr("计划：关闭", "Plan: off")
+      : tr("计划：未知", "Plan: unknown");
+  const char* access=tr("权限：未知", "Access: unknown");
+  if(chat.fresh) switch(chat.permission) {
+    case HostFeedback::Permission::FullAccess: access="Full access"; break;
+    case HostFeedback::Permission::WorkspaceWrite: access=tr("工作区权限", "Workspace write"); break;
+    case HostFeedback::Permission::ReadOnly: access=tr("只读权限", "Read only"); break;
+    case HostFeedback::Permission::Custom: access=tr("自定义权限", "Custom access"); break;
+    default: break;
+  }
+  center(speed,360,518,chat.fresh ? INK : MUTED,UiFont::sans16());
+  center(mode,551,518,chat.fresh ? INK : MUTED,UiFont::sans16());
+  center(access,790,518,chat.fresh ? INK : MUTED,UiFont::sans16());
+  center(tr("操作目标未核对", "Target not verified"),1096,518,
+      dark() ? 0xDAB785 : 0x876027,UiFont::sans16());
   paintTray(1008,378,198,75);
   center(chat.fresh ? tr("指定聊天", "Tracked chat") : tr("聊天状态未同步", "Chat not synced"),1107,390,MUTED,UiFont::sans16());
   if (chat.fresh) {
@@ -994,7 +997,8 @@ bool sameSlot(const Slot& a, const Slot& b) {
 }
 
 bool updateHeader(const State& state) {
-  const bool structural = state.connected != previousState.connected
+  const bool structural = state.usbMounted != previousState.usbMounted
+      || state.connected != previousState.connected
       || bool(state.rpc_count) != bool(previousState.rpc_count)
       || state.lightingPreview != previousState.lightingPreview
       || headerHeld != previousHeaderHeld;
@@ -1003,9 +1007,9 @@ bool updateHeader(const State& state) {
     drawHeader(state);
     present(28, 5, 1224, 91);
   } else if (!sameLights(state.hostLights, previousState.hostLights)) {
-    paintBody(420, 31, 230, 38);
+    paintBody(420, 31, 250, 38);
     drawHostSignal(state);
-    present(420, 31, 230, 38);
+    present(420, 31, 250, 38);
   } else return false;
   return true;
 }
@@ -1051,7 +1055,8 @@ bool updateDashboard(const State& state) {
       drew = true;
     }
   }
-  if (state.hostConfig.fresh != previousState.hostConfig.fresh
+  if (state.connected != previousState.connected
+      || state.hostConfig.fresh != previousState.hostConfig.fresh
       || state.hostConfig.encoder != previousState.hostConfig.encoder) {
     drawEncoderConfig(state);
     present(372, 376, 128, 74);
@@ -1062,6 +1067,7 @@ bool updateDashboard(const State& state) {
     drawChatFeedback(state);
     present(710,210,184,26);
     present(1008,378,198,75);
+    present(28,500,1224,36);
     drew=true;
   }
   // Compare the completed gesture with what was actually painted. A slow
@@ -1098,7 +1104,7 @@ bool inside(int x, int y, int bx, int by, int bw, int bh) {
 }  // namespace
 
 const RenderProfile& renderProfile() { return profiling; }
-void resetRenderProfile() { profiling = {}; }
+void resetRenderProfile() { profiling = {}; RenderService::resetProfile(); }
 
 TitleScrollStatus titleScrollStatus(uint8_t index) {
   TitleScrollStatus result;
@@ -1142,7 +1148,7 @@ bool init() {
   preferencesReady = preferences.begin("micro-ui", false);
   uint8_t saved = preferencesReady ? preferences.getUChar("theme", 0) : 0;
   input.theme = saved == uint8_t(Theme::Dark) ? Theme::Dark : Theme::Light;
-  persistedTheme = input.theme;
+  themePersistence = DeferredSetting<Theme>(input.theme);
   applyMaterial(input.theme);
   dialBackdrops[0] = static_cast<uint16_t*>(heap_caps_malloc(DIAL_W * DIAL_H * 2,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -1163,7 +1169,7 @@ bool init() {
 
 void invalidateDisplay() { displayInvalidated=true; }
 
-bool render(const State& state) {
+bool render(const State& liveState) {
   uint32_t now = millis();
   if (!ready) return false;
   const uint32_t localeRevision = UiLocale::revision();
@@ -1174,6 +1180,15 @@ bool render(const State& state) {
   snapshot = input;
   visual = MicroControls::visual();
   portEXIT_CRITICAL(&inputMux);
+  themePersistence.observe(snapshot.theme, snapshot.finger, now);
+  if (preferencesReady && themePersistence.due(now)) {
+    const bool saved = preferences.putUChar("theme", uint8_t(themePersistence.value())) == 1;
+    themePersistence.completed(saved, millis());
+  }
+  // Cooperative input/RX may mutate the live source while drawing. Retain one
+  // consistent frame on static storage rather than the small Arduino stack.
+  static State state;
+  state = liveState;
   advanceTitleClocks(snapshot, now);
   const bool immediate = localeChanged || titleTestRevision != appliedTitleTestRevision || displayInvalidated || snapshot.held != held || snapshot.playMode != playMode
       || snapshot.settingsMode != settingsMode
@@ -1215,27 +1230,30 @@ bool render(const State& state) {
     applyMaterial(snapshot.theme);
     MicroGames::setDarkTheme(snapshot.theme == Theme::Dark);
   }
-  // NVS may block, so persist a render snapshot outside the input critical
-  // section. Touch and command callers only request a new theme revision.
-  if (persistedRevision != snapshot.themeRevision) {
-    persistedRevision = snapshot.themeRevision;
-    if (preferencesReady && persistedTheme != snapshot.theme
-        && preferences.putUChar("theme", uint8_t(snapshot.theme)) == 1)
-      persistedTheme = snapshot.theme;
-  }
+
   lastFrame = now;
   frame++;
+  const uint32_t frameStarted = micros();
+  RenderService::beginFrame();
   // Batch the P4 framebuffer cache writeback once per frame. Otherwise each
   // small rotated strip can flush a much larger physical row span separately.
   M5.Display.startWrite();
   bool drew = full;
   if (full) {
+    uint32_t phaseStarted = micros();
     paintBody(0, 0, W, H);
+    profiling.fullBody = max(profiling.fullBody, micros() - phaseStarted);
+    phaseStarted = micros();
     drawHeader(state);
+    profiling.fullHeader = max(profiling.fullHeader, micros() - phaseStarted);
+    phaseStarted = micros();
     if (settingsMode) drawSettings();
     else if (playMode) MicroGames::render(canvas, now, true);
     else drawDashboard(state);
+    profiling.fullContent = max(profiling.fullContent, micros() - phaseStarted);
+    phaseStarted = micros();
     present(0, 0, W, H);
+    profiling.fullPresent = max(profiling.fullPresent, micros() - phaseStarted);
   } else {
     drew |= updateHeader(state);
     if (settingsMode) drew |= updateSettings(soundChanged);
@@ -1288,14 +1306,20 @@ bool render(const State& state) {
     }
   }
   if (forceFullPresent || displayInvalidated) {
-    M5.Display.clearClipRect();
-    canvas.pushSprite(0, 0);
+    pushRegion(0, 0, W, H);
     displayInvalidated=false;
     drew = true;
   }
   const uint32_t writebackStarted = micros();
   M5.Display.endWrite();
   profiling.writeback = max(profiling.writeback, micros() - writebackStarted);
+  RenderService::endFrame();
+  if (full) {
+    ++profiling.fullFrames;
+    profiling.fullTotal = max(profiling.fullTotal, micros() - frameStarted);
+  }
+  profiling.serviceCalls = RenderService::calls();
+  profiling.serviceGap = RenderService::maxGap();
   previousState = state;
   previousHeld = held;
   previousControls = controls;
@@ -1345,7 +1369,9 @@ Event touch(int16_t x, int16_t y, bool pressed) {
     MicroControls::cancel();
     input.held = MicroControls::visual().held;
     MicroControls::nextEvent(event);
+    const bool gameActive=input.playMode;
     portEXIT_CRITICAL(&inputMux);
+    MicroGames::setActive(gameActive);
     MicroGames::touch(x, y, false);
     return event;
   }

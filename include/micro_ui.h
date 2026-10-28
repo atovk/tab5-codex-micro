@@ -19,6 +19,11 @@ struct Slot {
 struct State {
   Slot slots[6];
   bool connected = false;
+  bool usbMounted = false;
+  // Native protocol traffic was observed during this USB mount. This is not
+  // an application heartbeat: an idle desktop need not send lighting changes.
+  bool nativeSessionSeen = false;
+  bool metadataFresh = false;
   bool titlesFresh = false;
   uint32_t rpc_count = 0;
   bool lightingPreview = false;
@@ -42,6 +47,8 @@ struct RenderProfile {
   uint32_t counterRestore = 0, counterText = 0, dialPresent = 0, writeback = 0;
   uint32_t neonDraw = 0, neonPresent = 0, neonFrames = 0;
   uint32_t titleDraw = 0, titlePresent = 0, titleFrames = 0;
+  uint32_t fullBody = 0, fullHeader = 0, fullContent = 0, fullPresent = 0;
+  uint32_t fullFrames = 0, fullTotal = 0, serviceCalls = 0, serviceGap = 0;
 };
 const RenderProfile& renderProfile();
 void resetRenderProfile();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify local feedback, settings gestures and persistence on firmware 0.11.0.
+"""Verify local feedback, settings gestures and persistence on firmware 0.11.1.
 
 SOUND_TEST deliberately exercises the hardware audio queue in input capture
 mode. Worker counters prove submission/retirement, not acoustic output. All
@@ -19,7 +19,7 @@ from verify_neon import Session, require
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIRMWARE = "tab5-micro-0.11.0"
+FIRMWARE = "tab5-micro-0.11.1"
 GEAR = (888, 49)
 MUTE = (164, 324)
 SLIDER_LEFT, SLIDER_RIGHT = 320, 1120
@@ -337,7 +337,7 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
         time.sleep(.5)
         session.command("FX FREEZE", "FX FREEZE")  # Renew capture before SCREEN.
         capture = session.screenshot(output.parent /
-                                     f"tab5-settings-restored-{baseline['theme']}-0.11.0.png")
+                                     f"tab5-settings-restored-{baseline['theme']}-0.11.1.png")
         report["captures"].append(capture)
         check_preferences(session.status(), initial)
         report["checks"]["restoration_saved_before_restart"] = wait_saved(session)
@@ -437,7 +437,7 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, nargs="?",
-                        default=ROOT / "artifacts/feedback-qa-0.11.0.json")
+                        default=ROOT / "artifacts/feedback-qa-0.11.1.json")
     parser.add_argument("--port", help="Optional initial port; exact device identity is rediscovered after reboot")
     parser.add_argument("--timeout", type=float, default=10)
     parser.add_argument("--max-enqueue-us", type=int)

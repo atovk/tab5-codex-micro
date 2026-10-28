@@ -2,11 +2,11 @@
 
 **简体中文** · [English](FLASHING.en.md)
 
-适用版本：**Tab5 Codex Micro 0.11.0**。硬件为 ESP32-P4 的 **M5Stack Tab5，16MB Flash／32MB PSRAM**。本指南使用预编译发布包，无需克隆仓库、安装 PlatformIO 或编译固件。
+适用版本：**Tab5 Codex Micro 0.11.1**。硬件为 ESP32-P4 的 **M5Stack Tab5，16MB Flash／32MB PSRAM**。本指南使用预编译发布包，无需克隆仓库、安装 PlatformIO 或编译固件。
 
 ## 1. 下载并解压
 
-从 [最新 Release](https://github.com/atovk/tab5-codex-micro/releases/latest) 下载 **`tab5-codex-micro-0.11.0.zip`**，完整解压到一个目录。不要直接在压缩包中运行脚本，也不要只下载 GitHub 自动生成的 “Source code” 压缩包。
+从 [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1) 下载 **`tab5-codex-micro-0.11.1.zip`**，完整解压到一个目录。不要直接在压缩包中运行脚本，也不要只下载 GitHub 自动生成的 “Source code” 压缩包。
 
 | 文件 | 用途 |
 | --- | --- |
@@ -33,7 +33,7 @@ python3 -m venv .venv
 .venv/bin/python flash.py --check
 ```
 
-`--check` 只检查本地发布文件，不刷写设备。若提示校验失败，重新下载完整 ZIP；不要忽略或绕过失败继续刷入。
+`--check` 只检查本地发布文件，不刷写设备；校验包含文件 SHA-256、P4 镜像布局、完整固件版本和字库格式。固件版本必须与发布清单精确匹配，不能将 RC 或更长版本号当作正式版。若提示校验失败，重新下载完整 ZIP；不要忽略或绕过失败继续刷入。
 
 也可使用系统工具检查 `SHA256SUMS`：
 
@@ -83,7 +83,11 @@ sha256sum -c SHA256SUMS
 
 新安装默认使用 **English**。打开右上角齿轮，在 **Language／语言** 中切换中文或英文；语言、主题、声音和亮度在普通重启后会保留；重新刷入 factory 镜像会重置这些设置。
 
-在电脑 Codex 桌面应用的 **设置 → Codex Micro** 中配置设备。旋钮、摇杆和按键使用原生 Micro 映射。聊天标题和真实 Fast／Plan／权限状态需要额外运行 macOS 本地桥接；配置见仓库的 [中文 README](https://github.com/atovk/tab5-codex-micro/blob/main/README.md) 或 [English README](https://github.com/atovk/tab5-codex-micro/blob/main/README.en.md)。
+在电脑 Codex 桌面应用的 **设置 → Codex Micro** 中配置设备。旋钮、摇杆和按键使用原生 Micro 映射。聊天标题和真实 Fast／Plan／权限状态需要额外运行 macOS 本地桥接；配置见本版本的 [中文 README](https://github.com/atovk/tab5-codex-micro/blob/v0.11.1/README.md) 或 [English README](https://github.com/atovk/tab5-codex-micro/blob/v0.11.1/README.en.md)。
+
+0.11.1 在独立只读“指定聊天设置 / Tracked settings”条中显示跟踪聊天下一次发送采用的真实设置，包括 Full access；未同步或过期时显示未知。Fast／Plan／Approve 原生按钮不代表该聊天的设置或操作目标，界面因此明确显示“操作目标未核对 / Target not verified”。切换桌面选中的聊天不会改变桥接目标，桥接也不会将原生按键重定向到跟踪聊天。
+
+“USB已提交 / USB submitted”只表示完整消息已交给 USB 栈，不是桌面执行回执；“USB未发送 / USB not sent”表示提交失败或队列拒绝，不承诺稍后发送。
 
 ## 后续更新
 

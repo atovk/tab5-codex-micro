@@ -2,11 +2,11 @@
 
 [简体中文](FLASHING.md) · **English**
 
-For **Tab5 Codex Micro 0.11.0**, targeting the ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. This guide uses a precompiled bundle. You do not need to clone the repository, install PlatformIO, or compile firmware.
+For **Tab5 Codex Micro 0.11.1**, targeting the ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. This guide uses a precompiled bundle. You do not need to clone the repository, install PlatformIO, or compile firmware.
 
 ## 1. Download and extract
 
-Download **`tab5-codex-micro-0.11.0.zip`** from the [latest Release](https://github.com/atovk/tab5-codex-micro/releases/latest) and extract the entire archive into one directory. Do not run the script from inside the ZIP or download only GitHub's automatically generated “Source code” archive.
+Download **`tab5-codex-micro-0.11.1.zip`** from the [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1) and extract the entire archive into one directory. Do not run the script from inside the ZIP or download only GitHub's automatically generated “Source code” archive.
 
 | File | Purpose |
 | --- | --- |
@@ -33,7 +33,7 @@ python3 -m venv .venv
 .venv/bin/python flash.py --check
 ```
 
-`--check` validates local release files without flashing a device. If validation fails, download and extract the complete ZIP again rather than bypassing the error.
+`--check` validates local release files without flashing a device. It checks file SHA-256 hashes, the P4 image layout, the complete firmware version, and the font format. The firmware version must exactly match the release manifest; an RC or longer version string cannot stand in for the stable release. If validation fails, download and extract the complete ZIP again rather than bypassing the error.
 
 You can also verify `SHA256SUMS` with system tools:
 
@@ -83,7 +83,11 @@ Keep the cable connected and power stable until the helper finishes. It handles 
 
 Fresh installations default to **English**. Open the gear at the top right and use **Language** to choose English or Chinese. Language, theme, audio, and brightness survive ordinary restarts. Flashing the factory image again resets these preferences.
 
-Configure the device in **Settings → Codex Micro** in the Codex desktop app. Dial, joystick, and keys use native Micro mappings. Chat titles and real Fast/Plan/permission metadata require the additional macOS local bridge. Follow the repository's [English README](https://github.com/atovk/tab5-codex-micro/blob/main/README.en.md) or [中文 README](https://github.com/atovk/tab5-codex-micro/blob/main/README.md).
+Configure the device in **Settings → Codex Micro** in the Codex desktop app. Dial, joystick, and keys use native Micro mappings. Chat titles and real Fast/Plan/permission metadata require the additional macOS local bridge. Follow this version's [English README](https://github.com/atovk/tab5-codex-micro/blob/v0.11.1/README.en.md) or [中文 README](https://github.com/atovk/tab5-codex-micro/blob/v0.11.1/README.md).
+
+Version 0.11.1 displays the tracked chat's real next-send settings, including Full access, in a separate read-only **Tracked settings** strip. Missing or expired metadata is unknown. Native Fast/Plan/Approve buttons do not represent that chat's settings or establish their action target, so the interface explicitly shows **Target not verified**. Changing the selected desktop chat does not change the bridge target, and the bridge does not redirect native keys to the tracked chat.
+
+**USB submitted** only means the complete message has been handed to the USB stack, not that the desktop executed it. **USB not sent** means submission failed or the queue rejected the event, with no promise of later delivery.
 
 ## Later updates
 

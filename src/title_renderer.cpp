@@ -2,6 +2,7 @@
 
 #include "title_layout.h"
 #include "ui_text.h"
+#include "render_service.h"
 #include <esp_heap_caps.h>
 #include <algorithm>
 #include <cstdlib>
@@ -20,6 +21,7 @@ void normalize(char (&output)[192],const char* source,const lgfx::IFont* font) {
   bool previousSpace=true;
   const char* cursor=source;
   while (*cursor) {
+    RenderService::checkpoint();
     const char* start=cursor;
     uint32_t code=0;
     bool valid=true;
@@ -104,6 +106,7 @@ bool Cache::prepare(const char* source,const lgfx::IFont* font,uint16_t width) {
   raster.clearClipRect();
   const auto* pixels=static_cast<const uint16_t*>(raster.getBuffer());
   for (size_t index=0;index<maskSize;++index) {
+    if ((index & 2047) == 0) RenderService::checkpoint();
     const unsigned green=(swapped(pixels[index])>>5)&63;
     mask[index]=uint8_t((green*255+31)/63);
   }
@@ -156,6 +159,7 @@ bool Cache::compose(M5Canvas& canvas,uint16_t offset) {
   bool changed=false;
   const size_t count=right-left;
   for (int y=top;y<bottom;++y) {
+    if ((y & 7) == 0) RenderService::checkpoint();
     const size_t local=size_t(y-y_)*width_+left-x_;
     const auto* alpha=mask_+size_t(offset)*width_+local;
     const auto* background=background_+local;

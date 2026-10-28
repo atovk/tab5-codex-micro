@@ -187,6 +187,17 @@ class ProjectionTests(unittest.TestCase):
         with self.assertRaises(bridge.RevisionGap):
             projection().consume(patches([]))
 
+    def test_resync_rejects_snapshot_older_than_last_observed_revision(self):
+        value = projection()
+        value.consume(snapshot(revision=8))
+        with self.assertRaises(bridge.RevisionGap):
+            value.consume(patches([], base=3, revision=4))
+        self.assertFalse(value.consume(snapshot(revision=7)))
+        with self.assertRaises(bridge.RevisionGap):
+            value.consume(patches([], base=8, revision=9))
+        self.assertFalse(value.consume(snapshot(revision=8)))
+        self.assertTrue(value.consume(snapshot(revision=9)))
+
     def test_older_snapshot_cannot_overwrite_newer(self):
         value = projection()
         value.consume(snapshot(revision=8))
@@ -349,6 +360,84 @@ class PermissionTests(unittest.TestCase):
         self.assertEqual(value.metadata()["permission"], "custom")
         self.assertNotIn(SECRET, json.dumps(value.__dict__))
 
+    def test_unknown_approval_patch_invalidates_until_matching_full_snapshot(self):
+        for path in (["future_policy"], ["granular", "future_flag"],
+                     ["granular", "rules", "future_flag"]):
+            with self.subTest(path=path):
+                value = projection()
+                event = self.event(approval=deepcopy(bridge.GRANULAR_PRESET), profile={"id": ":workspace"})
+                value.consume(event)
+                self.assertEqual(value.metadata()["permission"], "workspace-write")
+                with self.assertRaises(bridge.SnapshotRequired):
+                    value.consume(patches([
+                        {"op": "replace", "path": ["latestThreadSettings", "serviceTier"], "value": None},
+                        {"op": "add", "path": ["latestThreadSettings", "approvalPolicy", *path], "value": SECRET},
+                    ]))
+                self.assertEqual(value.settings, {})
+                self.assertEqual((value.metadata()["permission"], value.metadata()["tier"]), ("unknown", "unknown"))
+                self.assertEqual(value.metadata()["connection"], "waiting")
+                self.assertNotIn(SECRET, json.dumps(value.__dict__))
+                # A previously queued snapshot must not restore the old preset.
+                self.assertFalse(value.consume(event))
+                event["params"]["change"]["revision"] = 4
+                approval = event["params"]["change"]["conversationState"]["latestThreadSettings"]["approvalPolicy"]
+                target = approval
+                for key in path[:-1]:
+                    if not isinstance(target.get(key), dict):
+                        target[key] = {}
+                    target = target[key]
+                target[path[-1]] = SECRET
+                self.assertTrue(value.consume(event))
+                self.assertEqual(value.metadata()["permission"], "custom")
+                self.assertNotIn(SECRET, json.dumps(value.__dict__))
+
+    def test_unknown_approval_removal_resnapshots_instead_of_retaining_custom(self):
+        approval = deepcopy(bridge.GRANULAR_PRESET)
+        approval["granular"]["future_flag"] = True
+        value = projection()
+        value.consume(self.event(approval=approval, profile={"id": ":workspace"}))
+        self.assertEqual(value.metadata()["permission"], "custom")
+        with self.assertRaises(bridge.SnapshotRequired):
+            value.consume(patches([{"op": "remove", "path": ["latestThreadSettings", "approvalPolicy", "granular", "future_flag"]}]))
+        self.assertEqual(value.metadata()["permission"], "unknown")
+        event = self.event(approval=deepcopy(bridge.GRANULAR_PRESET), profile={"id": ":workspace"})
+        event["params"]["change"]["revision"] = 4
+        value.consume(event)
+        self.assertEqual(value.metadata()["permission"], "workspace-write")
+
+    def test_known_patch_after_lossy_approval_projection_requires_snapshot(self):
+        approval = deepcopy(bridge.GRANULAR_PRESET)
+        approval["granular"]["rules"] = SECRET
+        value = projection()
+        value.consume(self.event(approval=approval, profile={"id": ":workspace"}))
+        with self.assertRaises(bridge.SnapshotRequired):
+            value.consume(patches([{"op": "replace", "path": ["latestThreadSettings", "approvalPolicy", "granular", "rules"], "value": False}]))
+        self.assertEqual(value.metadata()["permission"], "unknown")
+        self.assertNotIn(SECRET, json.dumps(value.__dict__))
+
+    def test_ignored_sandbox_paths_do_not_force_snapshot_or_retain_paths(self):
+        value = projection()
+        value.consume(self.event())
+        value.consume(patches([
+            {"op": "add", "path": ["latestThreadSettings", "sandboxPolicy", "writableRoots", 0], "value": SECRET},
+            {"op": "replace", "path": ["latestThreadSettings", "activePermissionProfile", "displayName"], "value": SECRET},
+        ]))
+        self.assertEqual(value.metadata()["permission"], "full-access")
+        self.assertEqual(value.revision, 4)
+        self.assertNotIn(SECRET, json.dumps(value.__dict__))
+
+    def test_structural_permission_change_cannot_reuse_projected_scalar(self):
+        for path in (["sandboxPolicy", "networkAccess", "future_flag"],
+                     ["activePermissionProfile", "id", "future_flag"],
+                     ["approvalsReviewer", "future_flag"]):
+            with self.subTest(path=path):
+                value = projection()
+                value.consume(self.event())
+                with self.assertRaises(bridge.SnapshotRequired):
+                    value.consume(patches([{"op": "add", "path": ["latestThreadSettings", *path], "value": SECRET}]))
+                self.assertEqual(value.metadata()["permission"], "unknown")
+                self.assertNotIn(SECRET, json.dumps(value.__dict__))
+
     def test_disconnect_resets_permission(self):
         value = projection()
         value.consume(self.event())
@@ -416,6 +505,19 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(json.loads(self.output.read_text())["connection"], "waiting")
         self.assertEqual(self.client.socket.sent[0]["params"]["following"], True)
         self.assertEqual(self.client.socket.sent[0]["targetClientIds"], [OWNER])
+
+    def test_unknown_permission_patch_clears_cache_before_resubscribe(self):
+        self.client.socket = FakeSocket()
+        self.client.projection.consume(snapshot())
+        self.client.write()
+        event = patches([{"op": "add", "path": ["latestThreadSettings", "approvalPolicy", "future_flag"], "value": SECRET}])
+        self.assertFalse(self.client._handle_envelope(event))
+        cache = json.loads(self.output.read_text())
+        self.assertEqual((cache["connection"], cache["tier"], cache["permission"]), ("waiting", "unknown", "unknown"))
+        self.assertEqual(self.client.socket.sent[0]["params"]["following"], True)
+        self.assertNotIn(SECRET, self.output.read_text())
+        self.assertTrue(self.client._handle_envelope(snapshot(revision=4)))
+        self.assertEqual(json.loads(self.output.read_text())["tier"], "fast")
 
     def test_close_unsubscribes_and_clears_previous_cache(self):
         fake = FakeSocket()

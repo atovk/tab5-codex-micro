@@ -93,13 +93,23 @@ def inspect_font(data: bytes) -> int:
     return count
 
 
+def firmware_version(data: bytes) -> str:
+    """Read a complete firmware identifier, never a prefix of another version."""
+    versions = set(re.findall(
+        rb"(?<![0-9A-Za-z_.+-])tab5-micro-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)\x00",
+        data[0x10000:]))
+    if len(versions) != 1:
+        raise ReleaseError("Factory image must contain one unambiguous terminated firmware version")
+    return versions.pop().decode("ascii")
+
+
 def inspect_firmware(data: bytes, version: str) -> None:
     if not 0x10018 <= len(data) <= FONT_OFFSET:
         raise ReleaseError("Factory image is empty, truncated, or overlaps the font partition")
     for offset in (0x2000, 0x10000):
         if data[offset] != 0xE9 or struct.unpack_from("<H", data, offset + 12)[0] != 18:
             raise ReleaseError("Factory image is not an ESP32-P4 image")
-    if ("tab5-micro-" + version).encode("ascii") not in data[0x10000:]:
+    if firmware_version(data) != version:
         raise ReleaseError("Factory image version does not match the release")
     partitions = set()
     for at in range(0x8000, 0x8C00, 32):

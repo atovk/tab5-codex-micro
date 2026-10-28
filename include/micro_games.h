@@ -12,6 +12,9 @@ struct Rect { int16_t x, y, w, h; };
 struct Diagnostics { int game; int state; uint32_t score; uint32_t ticks; };
 
 void init();
+// Notify every page transition, including brief leave/re-enter sequences.
+// Leaving preserves progress and pauses a running game until Resume is tapped.
+void setActive(bool active);
 // Match the surrounding controller; a changed theme redraws content once.
 void setDarkTheme(bool dark);
 // Input is sampled independently of rendering; this only stores a snapshot.

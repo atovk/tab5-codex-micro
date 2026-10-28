@@ -27,7 +27,7 @@ def font_fixture():
                                        zlib.crc32(payload))).ljust(64, b"\0") + payload
 
 
-def firmware_fixture():
+def firmware_fixture(version="0.11.0", *, terminated=True):
     data = bytearray(b"\xff" * 0x10100)
     for offset in (0x2000, 0x10000):
         data[offset] = 0xE9
@@ -37,7 +37,8 @@ def firmware_fixture():
     for index, (kind, subtype, offset, size, name) in enumerate(entries):
         struct.pack_into("<HBBII16sI", data, 0x8000 + 32 * index, 0x50AA, kind, subtype,
                          offset, size, name, 0)
-    data[0x10020:0x10031] = b"tab5-micro-0.11.0\0"
+    identifier = ("tab5-micro-" + version).encode("ascii") + (b"\0" if terminated else b"")
+    data[0x10020:0x10020 + len(identifier)] = identifier
     return bytes(data)
 
 
@@ -146,6 +147,23 @@ class ReleaseFixture(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             packaging.package("0.11.0", self.bundle, self.firmware, self.font, root=self.source)
 
+    def test_resigned_firmware_must_match_the_entire_release_version(self):
+        path = self.bundle / "firmware.factory.bin"
+        for embedded in ("0.11.0-rc.1", "0.11.01", "0.11.0.1", "0.11.0+other"):
+            path.write_bytes(firmware_fixture(embedded))
+            self.resign()
+            with self.subTest(embedded=embedded), self.assertRaisesRegex(flash.ReleaseError, "version"):
+                flash.validate_bundle(self.bundle)
+
+    def test_exact_prerelease_is_valid_but_unterminated_or_mixed_versions_are_not(self):
+        flash.inspect_firmware(firmware_fixture("0.11.0-rc.1"), "0.11.0-rc.1")
+        invalid = [firmware_fixture(terminated=False),
+                   firmware_fixture() + b"\0tab5-micro-0.11.1\0",
+                   firmware_fixture().replace(b"tab5-micro-", b"xtab5-micro-")]
+        for data in invalid:
+            with self.subTest(data=data[-40:]), self.assertRaisesRegex(flash.ReleaseError, "version"):
+                flash.inspect_firmware(data, "0.11.0")
+
     def test_chip_check_precedes_all_writes_and_failure_aborts(self):
         bundle = flash.validate_bundle(self.bundle)
         runner = Mock(side_effect=subprocess.CalledProcessError(2, ["esptool", "chip-id"]))
@@ -198,6 +216,25 @@ class PortSelectionTests(unittest.TestCase):
         connection = serial_module.Serial.return_value
         connection.write.assert_called_once_with(b"BOOTLOADER\n")
         connection.close.assert_called_once()
+
+    def test_software_bootloader_rejects_wrong_usb_location_and_ambiguous_roms(self):
+        application = port("application")
+        wrong = port("wrong-rom", flash.ROM_PID, location="1-9")
+        expected = port("expected-rom", flash.ROM_PID)
+        for arrived in ([wrong], [wrong, expected]):
+            provider = Mock(side_effect=[[application], arrived])
+            serial_module = SimpleNamespace(Serial=Mock())
+            with self.subTest(arrived=arrived), patch.object(flash.time, "sleep"):
+                with self.assertRaises(flash.ReleaseError):
+                    flash.enter_rom(application, serial_module, provider)
+            serial_module.Serial.return_value.close.assert_called_once()
+
+    def test_bootloader_serial_write_failure_always_closes_connection(self):
+        serial_module = SimpleNamespace(Serial=Mock())
+        serial_module.Serial.return_value.write.side_effect = OSError("synthetic write failure")
+        with self.assertRaises(OSError):
+            flash.enter_rom(port("application"), serial_module, lambda: [])
+        serial_module.Serial.return_value.close.assert_called_once()
 
 
 if __name__ == "__main__":

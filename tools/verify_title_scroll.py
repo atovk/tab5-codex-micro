@@ -21,7 +21,7 @@ from verify_neon import Session, changed_pixels, require
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.11.0"
+VERSION = "0.11.1"
 FIRMWARE = f"tab5-micro-{VERSION}"
 ROW_HEIGHT = 25
 VIEW_HEIGHT = 50
@@ -461,7 +461,7 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "artifacts/qa/title-scroll-0.11.0.json")
+    parser.add_argument("--output", type=Path, default=ROOT / "artifacts/qa/title-scroll-0.11.1.json")
     parser.add_argument("--port")
     parser.add_argument("--timeout", type=float, default=10)
     parser.add_argument("--no-screenshots", action="store_true")

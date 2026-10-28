@@ -11,6 +11,7 @@
 #include "micro_sound.h"
 #include "micro_orientation.h"
 #include "ui_locale.h"
+#include "render_service.h"
 #include <esp_system.h>
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
@@ -24,6 +25,10 @@ uint32_t rendered=0;
 uint32_t sampledAt=0;
 uint8_t *screenCopy=nullptr;
 size_t screenOffset=0, screenSize=0;
+char screenHeader[64];
+size_t screenHeaderOffset=0, screenHeaderSize=0;
+bool screenSlow=false;
+uint32_t screenPixelStart=0;
 uint32_t screenProgress=0;
 bool inputTest=false, testPressed=false;
 bool inputHandoff=false;
@@ -73,6 +78,24 @@ void drainInputs() {
   while (MicroUI::pollEvent(event)) sendInput(event);
 }
 
+// Safe cooperative work during rendering: no drawing, persistence, orientation
+// changes, or command dispatch. The UI renders an immutable state snapshot.
+void serviceInputs() {
+  uint32_t now=micros();
+  if (sampledAt) MicroLink::recordInputInterval(now-sampledAt);
+  sampledAt=now;
+  M5.update();
+  MicroLink::poll();
+  auto p=M5.Touch.getDetail();
+  if (inputHandoff && !p.isPressed()) inputHandoff=false;
+  if (uiReady) {
+    sendInput(inputTest ? MicroUI::touch(testX,testY,testPressed)
+                    : inputHandoff ? MicroUI::touch(0,0,false)
+                                   : MicroUI::touch(p.x,p.y,p.isPressed()));
+    drainInputs();
+  }
+}
+
 void endInputTest() {
   if (!inputTest && !MicroLink::capturingInputs()) return;
   sendInput(MicroUI::touch(0,0,false)); drainInputs();
@@ -86,26 +109,53 @@ void endInputTest() {
   MicroLink::captureInputs(false);
 }
 
+void finishScreen() {
+  free(screenCopy); screenCopy=nullptr; screenSlow=false;
+  // Cancel touches while diagnostic output still owns the HID capture gate.
+  if (!inputTest) {
+    sendInput(MicroUI::touch(0,0,false)); drainInputs();
+    inputHandoff=true;
+  }
+  MicroLink::setDiagnosticFrameActive(false);
+}
 void streamScreen() {
   if (!screenCopy) return;
   if (millis()-screenProgress>30000) {
-    free(screenCopy); screenCopy=nullptr;
+    finishScreen();
     return;
   }
   int available=DebugSerial.availableForWrite();
   if (available<=0) return;
-  size_t n=std::min<size_t>(available,screenSize-screenOffset);
-  n=std::min<size_t>(n,1024);
-  size_t sent=DebugSerial.write(screenCopy+screenOffset,n);
+  if (screenHeaderOffset<screenHeaderSize) {
+    const size_t n=std::min<size_t>(available,screenHeaderSize-screenHeaderOffset);
+    const size_t sent=DebugSerial.write(reinterpret_cast<const uint8_t*>(screenHeader)+screenHeaderOffset,n);
+    screenHeaderOffset+=sent;
+    if (screenHeaderOffset==screenHeaderSize) screenPixelStart=millis();
+    if (sent) screenProgress=millis();
+    return;
+  }
+  static constexpr char trailer[]="\nEND_FRAME\n";
+  const bool pixels=screenOffset<screenSize;
+  const size_t remaining=pixels ? screenSize-screenOffset
+      : sizeof(trailer)-1-(screenOffset-screenSize);
+  size_t n=std::min<size_t>(1024,std::min<size_t>(available,remaining));
+  // Diagnostic-only pacing creates a real in-flight frame at the 60s capture
+  // watchdog. Continuous host reads avoid macOS serial-buffer overflow.
+  if (screenSlow && pixels) {
+    const size_t allowed=std::min<size_t>(screenSize,uint64_t(millis()-screenPixelStart)*28);
+    if (allowed<=screenOffset) return;
+    n=std::min(n,allowed-screenOffset);
+  }
+  const uint8_t* bytes=pixels ? screenCopy+screenOffset
+      : reinterpret_cast<const uint8_t*>(trailer)+screenOffset-screenSize;
+  const size_t sent=DebugSerial.write(bytes,n);
   screenOffset+=sent;
   if (sent) screenProgress=millis();
-  if (screenOffset==screenSize) {
-    DebugSerial.println("\nEND_FRAME");
-    free(screenCopy); screenCopy=nullptr;
-  }
+  if (screenOffset==screenSize+sizeof(trailer)-1) finishScreen();
+
 }
 void debugCommand() {
-  if (screenCopy) return;
+  if (screenCopy || MicroLink::diagnosticTextPending()) return;
   size_t budget=256;
   while (budget-- && DebugSerial.available()) {
     char c=DebugSerial.read();
@@ -232,14 +282,23 @@ void debugCommand() {
           MicroGames::touch(x,y,pressed!=0); DebugSerial.println("OK");
         } else DebugSerial.println("GAME_TOUCH_ERROR");
       }
-      else if (command=="SCREEN" && uiReady) {
+      else if ((command=="SCREEN" || command=="SCREEN_TEST_SLOW") && uiReady) {
+        if (command=="SCREEN_TEST_SLOW" && !inputTest) {
+          DebugSerial.println("SCREEN_TEST_ERROR"); command=""; continue;
+        }
+        if (M5.Touch.getCount()!=0) {
+          DebugSerial.println("ERROR: lift touch before snapshot"); command=""; continue;
+        }
         int w=MicroUI::bufferWidth(), h=MicroUI::bufferHeight();
         screenSize=size_t(w)*h*2;
         screenCopy=static_cast<uint8_t*>(heap_caps_malloc(screenSize,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
         if (screenCopy) {
           memcpy(screenCopy,MicroUI::framebuffer(),screenSize);
           screenOffset=0; screenProgress=millis();
-          DebugSerial.printf("FRAME %d %d RGB565_BE\n",w,h);
+          screenSlow=command=="SCREEN_TEST_SLOW";
+          MicroLink::setDiagnosticFrameActive(true);
+          screenHeaderOffset=0;
+          screenHeaderSize=snprintf(screenHeader,sizeof(screenHeader),"FRAME %d %d RGB565_BE\n",w,h);
         } else {
           DebugSerial.println("ERROR: snapshot allocation failed");
         }
@@ -270,7 +329,7 @@ void debugCommand() {
         MicroLink::resetMetrics(); DebugSerial.println("OK");
       } else if (command=="RESTART") ESP.restart();
       command="";
-      if (screenCopy) break;
+      if (screenCopy || MicroLink::diagnosticTextPending()) break;
     } else if (command.length()<6144) command+=c;
   }
 }
@@ -319,23 +378,13 @@ void setup() {
   previousTheme=MicroUI::theme();
   if (!uiReady) { M5.Display.fillScreen(TFT_BLACK); M5.Display.setTextColor(TFT_RED); M5.Display.println("Canvas allocation failed"); }
   USB.begin();
-  DebugSerial.println("Tab5 Codex Micro 0.11.0 ready");
+  RenderService::setCallback(serviceInputs);
+  DebugSerial.println("Tab5 Codex Micro 0.11.1 ready");
 }
 void loop() {
-  uint32_t now=micros();
-  if (sampledAt) MicroLink::recordInputInterval(now-sampledAt);
-  sampledAt=now;
-  M5.update();
-  MicroLink::poll();
-  auto p=M5.Touch.getDetail();
   if (inputTest && millis()-inputTestAt>60000) endInputTest();
-  if (inputHandoff && !p.isPressed()) inputHandoff=false;
-  if (uiReady) {
-    sendInput(inputTest ? MicroUI::touch(testX,testY,testPressed)
-                    : inputHandoff ? MicroUI::touch(0,0,false)
-                                   : MicroUI::touch(p.x,p.y,p.isPressed()));
-    drainInputs();
-  }
+  serviceInputs();
+  auto p=M5.Touch.getDetail();
   // Release the complete old gesture before changing coordinate systems.
   // getCount includes every finger and the final release transition.
   if (MicroOrientation::poll(M5.Touch.getCount()!=0 || inputTest || inputHandoff || screenCopy))

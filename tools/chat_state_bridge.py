@@ -34,7 +34,11 @@ class BridgeError(Exception):
     """Only constant, content-free messages should cross the CLI boundary."""
 
 
-class RevisionGap(BridgeError):
+class SnapshotRequired(BridgeError):
+    """The bounded projection cannot safely apply this incremental update."""
+
+
+class RevisionGap(SnapshotRequired):
     pass
 
 
@@ -291,9 +295,22 @@ def apply_projected_patch(state: dict, patch: dict) -> dict:
                    or (leaf == "approvalPolicy" and (remainder == ["granular"] or
                        (len(remainder) == 2 and remainder[0] == "granular" and remainder[1] in GRANULAR_PRESET["granular"]))))
         if not allowed:
+            # Approval equality uses the entire object. Ignoring an unknown
+            # field here would leave a preset selected when a full snapshot
+            # would classify it as custom. Other permission projections omit
+            # unknown top-level fields (notably writableRoots) deliberately.
+            if (leaf in ("approvalPolicy", "approvalsReviewer")
+                    or leaf == "sandboxPolicy" and remainder[0] in (*SANDBOX_FLAGS, "type")
+                    or leaf == "activePermissionProfile" and remainder[0] == "id"):
+                raise SnapshotRequired("IPC permission projection requires a snapshot")
             return state
         current = target.get(leaf)
-        current = deepcopy(current) if isinstance(current, dict) else {}
+        # A custom approval sentinel intentionally lost its original shape.
+        # Even a known-field patch cannot reconstruct that object (for example
+        # removing its last unknown field), so ask the owner for the full state.
+        if not isinstance(current, dict) or leaf == "approvalPolicy" and current == {"custom": True}:
+            raise SnapshotRequired("IPC permission projection requires a snapshot")
+        current = deepcopy(current)
         parent = current
         if len(remainder) == 2:
             nested = parent.get(remainder[0])
@@ -332,12 +349,14 @@ class MetadataProjection:
         self.client_id: str | None = None
         self.settings: dict = {}
         self.revision: int | None = None
+        self.minimum_snapshot_revision = 0
         self.observed_at = 0.0
         self.connection = "waiting"
 
     def invalidate(self, connection: str = "waiting") -> None:
         self.settings = {}
         self.revision = None
+        self.minimum_snapshot_revision = 0
         self.observed_at = 0.0
         self.connection = connection
 
@@ -364,19 +383,26 @@ class MetadataProjection:
             if not isinstance(change.get("conversationState"), dict):
                 raise BridgeError("Invalid IPC snapshot")
             # A late older snapshot must not overwrite already accepted state.
-            if self.revision is not None and revision < self.revision:
+            if revision < self.minimum_snapshot_revision or self.revision is not None and revision < self.revision:
                 return False
             next_settings = project_settings(change["conversationState"])
         elif change.get("type") == "patches":
             if not valid_revision(change.get("baseRevision")) or self.revision is None or change["baseRevision"] != self.revision or revision <= self.revision:
+                minimum_revision = max(self.minimum_snapshot_revision, self.revision or 0, revision)
                 self.invalidate()
+                self.minimum_snapshot_revision = minimum_revision
                 raise RevisionGap("IPC revision gap")
             patches = change.get("patches")
             if not isinstance(patches, list) or len(patches) > 100000:
                 raise BridgeError("Invalid IPC patch batch")
             next_settings = deepcopy(self.settings)
-            for patch in patches:
-                next_settings = apply_projected_patch(next_settings, patch)
+            try:
+                for patch in patches:
+                    next_settings = apply_projected_patch(next_settings, patch)
+            except SnapshotRequired:
+                self.invalidate()
+                self.minimum_snapshot_revision = revision
+                raise
         else:
             raise BridgeError("Unsupported IPC state change")
         self.settings = next_settings
@@ -547,7 +573,7 @@ class LocalChatClient:
             return False
         try:
             accepted = self.projection.consume(envelope)
-        except RevisionGap:
+        except SnapshotRequired:
             self.write()
             self.subscribe()
             return False

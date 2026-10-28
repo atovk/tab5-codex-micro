@@ -17,7 +17,7 @@ from verify_device import read_line, screenshot, status
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "artifacts"
-VERSION = "0.11.0"
+VERSION = "0.11.1"
 
 # Pillow boxes exclude the right/bottom edges. These patches stay completely
 # inside flat faces, away from AA, bevels, dial marks/text and the stick axes.

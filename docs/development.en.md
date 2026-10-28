@@ -4,6 +4,8 @@
 
 This page describes the project structure, protocol boundaries, validation tools, and main implementation milestones. See the [README](../README.en.md) for installation and everyday use. Test screenshots, serial records, and build outputs go into the locally ignored `artifacts/` directory. The public repository excludes personal chat metadata and device backups.
 
+These implementation notes describe 0.11.1. Precompiled firmware, the font, and bilingual flashing guides are available in the [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1). Validation results apply only to their labeled version and specific test cases.
+
 ## Project structure
 
 | Path | Purpose |
@@ -19,14 +21,23 @@ This page describes the project structure, protocol boundaries, validation tools
 | `src/title_renderer.cpp` | Glyph-mask caching and title-scroll compositing |
 | `include/title_layout.h` | Allocation-free UTF-8 wrapping |
 | `include/title_scroll.h` | Dwell, motion, pause, and resume clocks |
+| `include/micro_transport.h` | Bounded HID queue and release/neutral recovery within one USB session |
+| `src/render_service.cpp`, `include/render_service.h` | Checkpoints that service touch and USB cooperatively during drawing |
+| `include/game_lifecycle.h` | Game visibility, pause on exit, and explicit resume |
 | `tools/title_sync.py` | Serial synchronization of explicit Agent assignments, configuration, and chat state |
 | `tools/chat_state_bridge.py` | Live desktop-state subscription for an explicit chat |
 | `tools/desktop_sync.py`, `tools/chat_sync.py` | Strict configuration parsing and bridge-metadata validation |
+| `tools/verify_transition_performance.py` | Isolated checks for complete page transitions and new title-cache construction |
+| `tools/verify_screenshot_stream.py` | Binary screenshot integrity and cleanup across the capture watchdog |
 | `tests/` | Python and Arduino-free C++ regression tests |
 
 ## Precompiled release bundle
 
 Releases include the complete firmware, a separate title font, a flashing helper that needs no compilation, and checksums. See the [flashing guide](FLASHING.en.md) for installation. Bundles exclude personal NVS, chat caches, serial logs, and full-flash backups. Firmware and font are written at `0x0` and `0x510000` respectively.
+
+Release validation in 0.11.1 requires one unambiguous, NUL-terminated firmware version in the factory image, exactly equal to the manifest version. Neither `0.11.0-rc.1` nor `0.11.01` is accepted as `0.11.0`; mixed embedded versions are rejected too. The standalone bundle's `--check` continues to require only the Python standard library.
+
+Before any write, the source helper `tools/flash.py` uses `esptool --chip esp32p4 --no-stub read-mac` to check the selected chip and read its base MAC. When moving from the application into ROM, that MAC must match the original `TAB5-…` application serial. The port name may change after reset, but verification succeeds only when the same chip's application serial returns an exact matching `STATUS` firmware version. Other connected Tab5 devices cannot satisfy the reconnect check. ROM selection is explicit, an S3 cannot pass the P4 check, and the existing shared serial lock covers the operation. Version verification does not print chat metadata.
 
 ## Builds and USB adaptation
 
@@ -49,6 +60,12 @@ CDC starts explicitly after USB identity is configured, with an 8192-byte receiv
 
 A gesture remains captured from first contact until release. Crossing another button does not trigger it. Crossing the dial center reanchors its angle to prevent jumps. There is no inertial input after release. The desktop application interprets native dial modes, long presses, microphone behavior, and custom actions; firmware preserves those events rather than substituting generic keyboard shortcuts.
 
+Version 0.11.1 puts native inputs and protocol replies in a bounded queue and attempts one HID fragment per poll. A busy endpoint or failed submission preserves the current position instead of waiting for USB completion in the touch path. Multi-fragment replies remain contiguous. Only unsent joystick movements within the same direction sector may be coalesced; threshold crossings, direction changes, and neutral events remain distinct.
+
+Within the same USB session, expired inputs, a full queue, or diagnostic suspension cancel unsent actions. Releases and joystick neutral for already-submitted controls take priority, and new presses are rejected until recovery is submitted. A true USB unmount clears the queue, session, and recovery state. Reconnection never replays old presses, turns, releases, or partial replies. A release can itself trigger a desktop action, so recovery must not cross USB sessions.
+
+The **USB not sent** button receipt means submission failed or the queue rejected the event. It does not mean that the event remains queued or promise later delivery. **USB submitted** appears only after a complete message has been successfully handed to the USB stack. Submission does not prove that the desktop received the message or executed its mapping.
+
 `INPUT_TEST` uses the same touch path and event serializer, but returns generated events through CDC and suppresses computer-side HID actions. It exits after 60 seconds without test input. After capture ends, an existing finger must lift before computer control resumes. Captured events alone do not prove that the desktop application executed an action.
 
 ## Metadata boundaries
@@ -57,7 +74,9 @@ Native Micro lighting messages retain color, brightness, effect, speed, and magi
 
 The title companion resolves explicit local Custom assignments and reads only their required titles by ID. It does not infer slot order from recent-access timestamps. Received titles have a 191-byte UTF-8 limit; truncation occurs only at complete character boundaries. `TITLES` and `HOST_CONFIG` have independent acknowledgements and share one uint32 sequence number per batch. A failed acknowledgement for either packet does not prevent the other packet from being attempted, and failed batches can be retried.
 
-Normal watch mode checks for changes once per second and sends a heartbeat approximately every two seconds. Each message has its own 1.5-second acknowledgement budget, and partial acknowledgement lines survive read timeouts. The device marks metadata stale after 7.5 seconds without a valid update or when USB unmounts. Retained RGB state and metadata freshness are separate concepts.
+Normal watch mode checks for changes once per second and sends a heartbeat approximately every two seconds. Each message has its own 1.5-second acknowledgement budget, and partial acknowledgement lines survive read timeouts. The device marks metadata stale after 7.5 seconds without a valid update or when USB unmounts.
+
+Connection evidence is kept separate: `usb_mounted` describes the current USB mount; `native_session_seen` means native host traffic was observed in this USB session, not that the host remains live; titles, configuration, and chat settings each have freshness state. The header labels USB connection and **Last** lighting explicitly. Retained RGB values cannot prove current desktop state. USB unmount invalidates the native session and metadata.
 
 ### Real settings for an explicit chat
 
@@ -67,7 +86,9 @@ Accepted next-turn settings determine Fast/Standard, Plan/Default, and the permi
 
 The bridge retains only the required settings projection, without writing conversation bodies, tool output, or raw IPC frames. Its cache has 0600 permissions and updates atomically. Disconnection, loss of the owner, or a revision gap invalidates state. The companion rejects state caches older than six seconds. Desktop IPC is an internal, versioned interface; incompatible application upgrades should produce an explicit unknown state.
 
-The native HID command target and the displayed bridge target are independent. The screen's explicit-chat label does not mean that it follows desktop selection automatically. A USB “Sent” indicator reports device transport status, not an application execution acknowledgement.
+If a permission patch touches an unknown approval field or structure that the current projection cannot safely reconstruct, the bridge immediately invalidates the projection and requests a full snapshot. A reduced custom-approval marker also cannot reconstruct its original object from an incremental patch. Until resynchronization, the state is unknown instead of retaining an old preset such as Full access. Snapshots still retain only filtered settings, without caching raw new field values, paths, or profile names.
+
+Version 0.11.1 displays bridge values in a separate read-only **Tracked settings** strip with an explicit **Target not verified** notice. Native Fast/Plan/Approve buttons retain desktop mappings and no longer change their active appearance or names according to tracked chat settings. The tracked title also does not prove that HID commands target that chat. Desktop selection and the bridge target remain independent.
 
 ## Runtime interface language
 
@@ -101,6 +122,10 @@ Broad backgrounds, panels, and key faces use deterministic solid RGB565 colors, 
 
 Activity neon stays on keycap edges, leaving the text region outside the animation. Border and title updates do not redraw the entire card. Presses and theme changes invalidate and recapture the relevant background caches.
 
+Version 0.11.1 adds `RenderService` checkpoints between longer material drawing, title rasterization, and pixel writeback operations. They cooperatively sample touch, handle bounded USB reception, and advance the transmit queue. Rendering uses a state snapshot. Checkpoints do not reenter drawing, persist preferences, change orientation, or dispatch CDC commands that could reenter rendering. This reduces gaps in input servicing during drawing; it does not make a complete redraw instantaneous. Complete-frame duration is still recorded separately.
+
+Game lifecycle changes apply immediately when page visibility changes, without relying on a later render to observe an intermediate page. A quick exit to the console and return still leaves the game paused. Simulation resumes only after an explicit resume action, and hidden games do not advance the run.
+
 Touch regions extend slightly beyond the visible keycaps while gaps preserve separate gesture boundaries. This layout has been reviewed against screen dimensions and target sizes; it has not undergone a formal user study or usability certification.
 
 ## Sound and orientation
@@ -132,9 +157,17 @@ With a Tab5 running this firmware, run the relevant device checks as needed:
 .venv/bin/python tools/verify_audio_performance.py
 .venv/bin/python tools/verify_neon.py
 .venv/bin/python tools/verify_orientation.py
+.venv/bin/python tools/verify_transition_performance.py --firmware 0.11.1
+.venv/bin/python tools/verify_screenshot_stream.py --firmware 0.11.1
 ```
 
 These touch-regression tools use diagnostic capture to prevent synthetic touches from triggering computer actions. Cleanup exits capture, clears previews, and restores preferences. Orientation validation may require manually repositioning the device.
+
+`verify_transition_performance.py` separately measures day/night, English/Chinese, settings open/close, game-library/console transitions, and new title-cache construction for all six slots and the tracked chat. Each phase clears performance counters, sends short commands, waits without polling, then reads the first `STATUS`, requiring synchronous drawing to have returned. It records command ACK time, complete rendering, and input-service intervals separately; an ACK is not treated as a completed frame.
+
+The tool owns an isolated `INPUT_TEST` capture and uses synthetic previews. It does not write real titles or `HOST_CONFIG`, transfer `SCREEN`, or send native computer actions, and it restores the page and preferences on exit. Output retains only whitelisted timing and local-state fields. By default it records a baseline; `--max-input-us` sets an input-service interval threshold for that run. A cold title means a new layout/raster cache entry; font storage itself may already be warm. These counters do not prove physical touch-to-pixel latency or desktop execution of native actions.
+
+`verify_screenshot_stream.py` checks binary screenshot integrity across the 60-second capture watchdog. It obtains a reference frame from a frozen synthetic preview with an isolated held key, then uses the capture-only `SCREEN_TEST_SLOW` command to pace device transmission at **28,000 B/s**. The host reads continuously rather than relying on host serial buffering to apply device backpressure. The tool checks the header, exact pixel byte count, trailer, equality with the reference frame, and the deferred release event and cleanup `STATUS` after the frame.
 
 The state and titles used by `verify_host_feedback.py` and `verify_title_font.py` are isolated synthetic demonstrations. `verify_chat_bridge.py` actually changes an explicit test chat's next-turn settings, then restores their original values. Read its `--help` and use a dedicated test chat. It verifies state feedback; it cannot independently prove native HID execution.
 
@@ -144,6 +177,7 @@ Common CDC commands:
 | --- | --- |
 | `STATUS` | Firmware, input, font, metadata, and rendering statistics; may include chat title/ID |
 | `SCREEN` | Copy the current framebuffer into PSRAM and export RGB565 in chunks |
+| `SCREEN_TEST_SLOW` | Send a test screenshot at 28,000 B/s only during `INPUT_TEST` capture; rejected otherwise |
 | `THEME LIGHT` / `THEME DARK` | Change the local theme |
 | `LANGUAGE EN` / `LANGUAGE ZH` | Switch the interface to English / Chinese |
 | `PLAY` / `MICRO` | Switch between the game library and console |
@@ -152,6 +186,18 @@ Common CDC commands:
 | `BOOTLOADER` / `RESTART` | Enter ROM download mode or restart |
 
 During screenshot transfer, the companion cannot acquire the serial lock, so metadata observed after transfer may exceed its TTL. This does not change the image copied when `SCREEN` began. To validate live state, save a fresh `STATUS` before the screenshot; release the lock after transfer and allow the companion to refresh.
+
+### Current 0.11.1 validation results
+
+- The full **233-test host suite passed**, as did all generated-asset checks. The final PlatformIO build succeeded, and the firmware was flashed to Tab5.
+- All ten complete device transitions passed the **50ms input-service interval** threshold, with a maximum of **25,011µs**. The same ten-phase 0.11.0 baseline reached **1,109,016µs**. These measurements cover themes, languages, settings, game pages, and new title-cache construction.
+- Day/night theme changes recorded maximum input-service intervals of **7,009/6,680µs**. Complete theme redraws took approximately **0.39 seconds**, versus approximately **1.1 seconds** previously. Complete-frame duration and input-service interval are measured separately.
+- The pixel-restoration cases in this run recorded **zero changed pixels** between partial restoration and a complete redraw.
+- Consecutive `MICRO` and `PLAY` commands returned the game to a paused state with unchanged simulation ticks.
+- With sound active, dial/joystick samples recorded maximum input-sampling intervals of **10,352/11,644µs**.
+- The slow-frame watchdog check passed: all **1,843,200 bytes** arrived in **65.832 seconds**, with the same SHA as the fast reference frame and `END_FRAME` at the exact boundary. Only one captured press/release pair was observed, with the release line after the frame trailer. The native computer-input counter increased by **zero**.
+
+These results apply to this device and these test cases, not universal performance limits. Diagnostic capture and device counters do not prove desktop execution of native actions. The slow-frame check establishes transmission integrity for that frozen reference frame; it does not replace pixel-restoration tests.
 
 ### 0.11.0 validation summary
 
@@ -180,6 +226,7 @@ These are short device-side samples, not universal performance limits or compute
 
 | Version | Changes |
 | --- | --- |
+| 0.11.1 | Separate tracked settings and native targets, explicit connection evidence, nonblocking HID and release recovery, cooperative input during drawing, pause on game exit, permission-patch resynchronization, and strict flashing verification |
 | 0.11.0 | Runtime English/Chinese interface, bilingual documentation, and a prebuilt firmware/font download bundle |
 | 0.10.2 | Two-line titles, automatic overflow scrolling, touch pause, glyph-mask caching, and scroll regression tests |
 | 0.10.1 | Complete BMP title font, consistent typography, per-character missing-glyph handling, and ink-based alignment |

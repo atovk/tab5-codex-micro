@@ -4,11 +4,11 @@
 
 Turn **M5Stack Tab5** into a touch controller for Codex. It preserves Micro's dial, joystick, and key interactions, and adds chat metadata, two themes, sound, and games to the 5-inch 1280×720 touchscreen.
 
-This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Current version: **0.11.0**.
+This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Current version: **0.11.1**.
 
 ## Download and flash
 
-Open the [latest Release](https://github.com/atovk/tab5-codex-micro/releases/latest), download **`tab5-codex-micro-0.11.0.zip`**, and extract the entire archive. It includes compiled firmware, the title font, a flashing helper, checksums, and Chinese/English instructions. **No PlatformIO installation or compilation is required.**
+Open the [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1), download **`tab5-codex-micro-0.11.1.zip`**, and extract the entire archive. It includes compiled firmware, the title font, a flashing helper, checksums, and Chinese/English instructions. **No PlatformIO installation or compilation is required.**
 
 You need Python **3.11+**, a USB-C data cable, and an ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. The commands below target macOS/Linux; the Windows flashing workflow has not been verified.
 
@@ -28,7 +28,7 @@ See the [flashing guide](docs/FLASHING.en.md) for full steps, addresses, updates
 
 ## Interface preview
 
-These English UI images are captured from the Tab5 framebuffer. Chat titles and states use isolated demonstration data. Switch between Chinese and English in device settings.
+These English UI previews are captured from the 0.11.1 Tab5 framebuffer. Chat titles and states use isolated demonstration data. Switch between Chinese and English in device settings. Tracked chat settings appear in a separate read-only strip, as described below.
 
 | Day | Night |
 | --- | --- |
@@ -39,7 +39,7 @@ These English UI images are captured from the Tab5 framebuffer. Chat titles and 
 - **Native Micro interactions:** rotate around the dial's outer ring; tap or hold its center. The joystick sends continuous direction and distance and returns to center on release. The desktop app applies its Micro mappings.
 - **Chat keys:** six Agent keys show host lighting states and animated activity borders. A local companion can add titles for explicitly assigned chats.
 - **Two-line titles:** Chinese and English wrap at the normal font size. Longer titles scroll slowly in a loop, pause during touch, and resume after release.
-- **Real chat settings:** an optional bridge synchronizes the designated chat's accepted settings for its next send: Fast/Standard, Plan/Default, and permission presets including **Full access**. Missing or expired metadata is shown as unknown.
+- **Separate chat settings strip:** an optional bridge displays the designated chat's accepted settings for its next send: Fast/Standard, Plan/Default, and permission presets including **Full access**. The strip is read-only; missing or expired metadata is unknown. These values no longer serve as the states of the native Fast/Plan/Approve buttons.
 - **Two languages and themes:** the console, settings, and games support Chinese/English and matching light-metal/dark-graphite themes. A full flash defaults to English; the selected language survives ordinary restarts.
 - **Subtle sound and preferences:** short sounds accompany keys, dial steps, and joystick actions. Volume, mute, brightness, and language are adjustable and survive restarts.
 - **Automatic orientation:** the IMU selects between two landscape orientations and updates touch coordinates. Screw holes down is the default reference. Flat placement, movement, and active touch hold the current orientation.
@@ -59,6 +59,10 @@ Connect USB-C to the computer, then configure keys, dial behavior, and voice in 
 | Sun/moon at the top right | Switch and save the theme |
 | Gear at the top right | Volume, mute, brightness, and language |
 | Games at the top right | Open the local game library |
+
+Fast/Plan/Approve retain their native desktop behavior; they do not establish that the action targets the chat in the settings strip. The interface explicitly says **Target not verified**. A brief **USB not sent** receipt means submission failed or the queue rejected the event, with no promise of later delivery. **USB submitted** appears only after the USB stack accepts the complete message; it still does not acknowledge desktop execution.
+
+The header's **USB connected** label means that USB is mounted; **Last** lighting describes the last native lighting information received. An observed native session, a current USB connection, and fresh bridge metadata are independent evidence and cannot substitute for each other.
 
 The desktop settings determine the final behavior of dial modes, command keys, joystick actions, and voice. Default voice input uses the **computer microphone**, not the Tab5 microphone. The auxiliary key may be unassigned until separate microphone keys are enabled and configured on the desktop.
 
@@ -105,7 +109,7 @@ In another terminal, run from the same repository:
 
 Replace `CHAT_UUID` with the **local chat UUID** available in its link. Keep the desktop app and `title_sync.py --watch` or the title service running. The bridge subscribes to the chat's accepted settings for the next turn; it does not start chats or send messages.
 
-The device identifies the designated target. **Selecting another chat on the desktop does not automatically change the bridge target**, nor does the bridge change the native Micro command target. Keep the displayed and operated targets aligned. The state bridge is a separate foreground process; stop it with Ctrl-C. The title login service does not start it.
+The **Tracked chat** area identifies the target, and a separate read-only strip displays its settings. **Selecting another chat on the desktop does not automatically change the bridge target**; the bridge also does not redirect native Micro commands to that chat. Fast/Plan/Approve buttons do not change appearance based on tracked values, and the **Target not verified** notice remains visible. The state bridge is a separate foreground process; stop it with Ctrl-C. The title login service does not start it.
 
 ### Metadata and privacy
 
@@ -119,7 +123,7 @@ The title companion reads saved key assignments and the required titles. The sta
 | Falling blocks | Left, rotate, right, soft drop, hard drop; hold to repeat, with a landing preview |
 | Dinosaur runner | Tap the field or jump key to clear cacti; speed increases with distance |
 
-Games run locally without sending game controls to the computer. Returning to the console retains the current run, which is paused when revisited. High scores last until restart.
+Games run locally without sending game controls to the computer. Leaving a game immediately pauses and retains the run. Even a quick exit and return keeps it paused until you choose to resume. High scores last until restart.
 
 ## Build from source
 
@@ -133,6 +137,8 @@ After preparing the source checkout and Python environment above:
 .venv/bin/python tools/flash.py --port /dev/cu.usbmodemXXXX --skip-build \
   --font-image artifacts/tab5-title-font-v1.bin
 ```
+
+The source flashing helper validates the complete firmware version and P4 image layout, then reads the selected chip's base MAC before writing. It checks identity continuity when moving from the application into ROM. After restart, the same chip's application serial must return an exact matching `STATUS` firmware version; another connected Tab5 cannot satisfy verification. Release-bundle validation also requires an exact version and rejects RC or longer version strings mislabeled as the stable release.
 
 Development primarily targets macOS and requires Git and a working C++ compiler. Toolchains are isolated in `.pio-core/`; the first font generation needs internet access. Include the complete title font on the first flash. Later, `tools/flash.py --port PORT` can update firmware while retaining the font; factory-image updates still reset local preferences.
 
@@ -152,13 +158,13 @@ Development primarily targets macOS and requires Git and a working C++ compiler.
 .venv/bin/python tools/verify_device.py screenshot artifacts/tab5-screen.png
 ```
 
-`hid-status` only requests status; it does not press keys. Host tests cover input logic, metadata, fonts, and scrolling. Device tools check touch, pixel restoration, audio, and themes. See the [development guide](docs/development.en.md) for architecture, protocol boundaries, and validation methods.
+`hid-status` only requests state; it does not trigger keys. Input, metadata, fonts, and scrolling have host-side logic tests. Device tools cover touch, pixel restoration, sound, and themes. The new `tools/verify_transition_performance.py` measures theme, language, settings, and game-page transitions plus initial title-cache construction. It isolates native inputs and reads metrics after each completed transition, without treating command acknowledgement time as complete render time. See the [development notes](docs/development.en.md) for architecture, protocol boundaries, and validation methods.
 
 ## Current limits
 
 - This third-party protocol implementation may be affected by desktop updates. Incompatible state interfaces or expired metadata show unknown rather than substituting saved defaults for real state.
 - Live settings follow one designated local chat. Agent titles require saved Custom assignments. Automatic following of desktop selection, remote chats, and reliable title matching for dynamic recent lists are not implemented.
-- State describes **settings for the next send**, not a turn already running. “Sent” means device-side USB transmission, not confirmation that the app executed the action.
+- The settings strip describes the **designated chat's next send**, not a running turn or the current target of native buttons. USB submission, a historical native session, and fresh bridge data cannot independently prove desktop execution.
 - Activity labels are inferred from desktop lighting colors; custom colors may affect them. Custom input mappings remain controlled by the desktop.
 - Titles use the BMP coverage of Noto Sans SC. Unsupported characters, including some emoji, are replaced individually. Each title is limited to **191 UTF-8 bytes**; received text beyond two lines scrolls. Changing UI language does not translate chat titles.
 - Automatic rotation supports two landscape orientations, with no portrait layout.

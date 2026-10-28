@@ -9,6 +9,12 @@ void send(const MicroUI::Event &event);
 // Diagnostics use the actual serializer while suppressing desktop actions.
 void captureInputs(bool enabled);
 bool capturingInputs();
+// Call before the FRAME header and after END_FRAME (also on abort). Keeps
+// native input disabled and defers text until the binary CDC frame is over.
+void setDiagnosticFrameActive(bool active);
+// The serial command dispatcher waits until deferred lines finish before
+// printing a new ACK or FRAME header, so partial CDC writes cannot interleave.
+bool diagnosticTextPending();
 bool previewLights(const char *payload);
 void clearLightingPreview();
 const MicroUI::State &state();
