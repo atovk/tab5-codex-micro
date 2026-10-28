@@ -4,13 +4,13 @@
 
 Turn **M5Stack Tab5** into a touch controller for Codex. It preserves Micro's dial, joystick, and key interactions, and adds chat metadata, two themes, sound, and games to the 5-inch 1280×720 touchscreen.
 
-This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Latest version: **0.13.0 with USB microphone and USB/Bluetooth controls**. Hardware validation scope and known limits are described below.
+This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Latest version: **0.13.1 with touch-console and interaction improvements**. Hardware validation scope and known limits are described below.
 
-**0.13.0 adds a USB microphone:** select the onboard Tab5 microphone on your computer and adjust live meters, mute, and gain on the device, with no additional audio driver. Bluetooth microphone audio is deferred; existing Bluetooth controls and title synchronization remain available. See the [microphone guide](docs/MICROPHONE.en.md) for the reason, setup, and measured scope.
+**0.13.1 improves the console and touch controls:** three panels, inner joystick arrows, separate link and synchronization status, and release confirmation for known Approve/Reject/Send actions. Dynamic recent Agent lists remain supported; unavailable title mappings show an unsynchronized state instead of retaining the previous chat's settings. USB microphone, USB/Bluetooth controls, and local games remain available. Bluetooth microphone audio remains unsupported; see the [microphone guide](docs/MICROPHONE.en.md) for the reason.
 
 ## Download and flash
 
-Open the [0.13.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.0), download **`tab5-codex-micro-0.13.0.zip`**, and extract the entire archive. It includes compiled firmware, the title font, a flashing helper, checksums, and Chinese/English flashing and microphone guides. **No PlatformIO installation or compilation is required.**
+Open the [0.13.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.1), download **`tab5-codex-micro-0.13.1.zip`**, and extract the entire archive. It includes compiled firmware, the title font, a flashing helper, checksums, English interface screenshots, and Chinese/English flashing and microphone guides. **No PlatformIO installation or compilation is required.**
 
 You need Python **3.11+**, a USB-C data cable, and an ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. The flashing helper supports macOS/Linux. Windows supports offline `--check` only; flashing is not supported.
 
@@ -30,11 +30,11 @@ See the [flashing guide](docs/FLASHING.en.md) for full steps, addresses, updates
 
 ## Interface preview
 
-These are real Tab5 framebuffer captures of the 0.13.0 microphone page in English. Switch between Chinese and English in device settings. See the [USB microphone guide](docs/MICROPHONE.en.md) for setup.
+These Tab5 framebuffer captures show the normally running 0.13.1 console with its UI set to English. The center shows the actual tracked title for this public project, “部署 Codex micro 到 Tab5,” and bridge state. Chat titles retain their original language rather than being translated with the UI. Screenshots do not establish native desktop execution or its target. Switch languages in device settings. See the [USB microphone guide](docs/MICROPHONE.en.md) for microphone setup.
 
 | Light | Dark |
 | --- | --- |
-| ![English light microphone page](assets/tab5-microphone-light-0.13.0.png) | ![English dark microphone page](assets/tab5-microphone-dark-0.13.0.png) |
+| ![0.13.1 English light console](docs/images/tab5-0.13.1-light-en.png) | ![0.13.1 English dark console](docs/images/tab5-0.13.1-dark-en.png) |
 
 Historical 0.12.0 console captures remain below. Chat titles and states use isolated demonstration data to show the layout; these are not evidence of fresh Bluetooth execution tests. Tracked chat settings appear in a separate read-only strip.
 
@@ -45,10 +45,11 @@ Historical 0.12.0 console captures remain below. Chat titles and states use isol
 ## Features
 
 - **USB/Bluetooth support:** native keys, dial, joystick, and lighting can use USB HID or BLE HID. Device settings provide a pairing PIN, saved bonds, and reconnection. Bluetooth Fast/Plan desktop changes and metadata synchronization retain the 0.12.0 hardware baseline. This round checked enumeration and bond retention only; validation limits are described below.
-- **Native Micro interactions:** rotate around the dial's outer ring; tap or hold its center. The joystick sends continuous direction and distance and returns to center on release. The desktop app applies its Micro mappings.
-- **Chat keys:** six Agent keys show host lighting states and animated activity borders. A local companion can add titles for explicitly assigned chats.
-- **Two-line titles:** Chinese and English wrap at the normal font size. Longer titles scroll slowly in a loop, pause during touch, and resume after release.
-- **Separate chat settings strip:** an optional bridge displays the designated chat's accepted settings for its next send: Fast/Standard, Plan/Default, and permission presets including **Full access**. The strip is read-only; missing or expired metadata is unknown. These values no longer serve as the states of the native Fast/Plan/Approve buttons.
+- **Native Micro interactions:** the dial sits on the left and the joystick on the right. Rotate around the dial's outer ring; tap or hold its center. The joystick sends continuous direction and distance and returns to center on release. The desktop app applies its Micro mappings.
+- **Chat keys:** six Agent keys retain the desktop's dynamic recent list and native lighting. The desktop does not export a reliable live slot-to-title mapping. After an Agent action is submitted, **Agent NN / Title not synced** identifies the slot without guessing its title or focus.
+- **Title display:** the central title uses the available width on one line and scrolls horizontally when too long. Agent key titles retain two-line wrapping and vertical overflow scrolling. Touch pauses scrolling; release resumes it.
+- **Three-panel console:** three equally wide panels use matching side disc sizes, a darker joystick with clearer contrast, and tappable inner arrows. **Tracked chat** and a single-line title occupy the center; bottom button icons and main labels stay fixed. The continuous read-only strip above them describes that tracked chat, rather than native key state. Missing synchronization or an Agent action makes those settings unknown.
+- **Clearer touch feedback:** until a real encoder-center press, a hint appears for at most eight seconds per boot. A real press is remembered persistently; diagnostic capture and frozen effects do not consume the hint. An unassigned key uses a flat empty state with one **Unassigned** label. A fresh, known Approve/Reject/Send mapping submits only on release inside its key; sliding out cancels an unsubmitted action.
 - **Two languages and themes:** the console, settings, and games support Chinese/English and matching light-metal/dark-graphite themes. A full flash defaults to English; the selected language survives ordinary restarts.
 - **Subtle sound and preferences:** short sounds accompany keys, dial steps, and joystick actions. Volume, mute, brightness, and language are adjustable and survive restarts.
 - **Onboard USB microphone:** select **Tab5 Microphone**, a standard UAC1 input with 16kHz, 16-bit mono audio. The microphone page offers meters, mute, and gain. Voice keeps its desktop mapping without automatically choosing a source. Bluetooth does not carry microphone audio.
@@ -63,16 +64,17 @@ Connect USB-C, or pair Bluetooth using the steps below. Configure keys, dial beh
 | --- | --- |
 | Rotate around the outer ring | 24 steps per revolution, clockwise/counterclockwise |
 | Tap/hold the dial center | Native encoder press/release; the desktop interprets holds |
-| Drag the joystick | Continuous direction and distance; direction labels describe default mappings |
-| Tap an Agent key | Trigger its corresponding desktop chat shortcut |
-| Hold/release a command key | Preserve native press/release, including push-to-talk mappings |
+| Drag the right joystick or tap its inner arrows | Continuous direction and distance; returns to center on release. Arrows use the same directional threshold as dragging |
+| Tap an Agent key | Trigger the native slot action; submission clears the previous tracked title/settings and shows Agent NN / Title not synced |
+| Release inside a synchronized Approve/Reject/Send key | Submit native press/release; sliding out cancels an unsubmitted action |
+| Hold/release Voice or another command key | Preserve native press/release, including push-to-talk; custom, unknown, or stale mappings retain their existing behavior |
 | Sun/moon at the top right | Switch and save the theme |
 | Gear at the top right | Volume, mute, brightness, language, Connections, and Microphone |
 | Games at the top right | Open the local game library |
 
-Fast/Plan/Approve retain their native desktop behavior; they do not establish that the action targets the chat in the settings strip. The interface explicitly says **Target not verified**. A brief **USB not sent** or **BLE not sent** receipt means submission failed or the queue rejected the event, with no promise of later delivery. **USB submitted** or **BLE submitted** only means that the corresponding transport stack accepted the complete message; it does not acknowledge desktop execution.
+Fast/Plan/Approve still send native desktop events; they do not establish that the action targets the chat in the central card. The strip above the buttons explicitly says **Target not verified**. Transport submission uses only a brief outline, meaning that the corresponding transport stack accepted the complete message; it does not establish successful desktop execution. **USB not sent** and **BLE not sent** failure notices remain: submission failed or the queue rejected the event, with no promise of later delivery. Release confirmation applies only to a fresh synchronized mapping explicitly identified as Approve/Reject/Send. Voice, encoder-center, Agent, and custom mappings retain their native behavior.
 
-The header distinguishes USB and Bluetooth connections; **Last** lighting describes the last native lighting information received. An observed native session, a current transport connection, and fresh bridge metadata are independent evidence and cannot substitute for each other.
+The main screen shows USB/BLE link state separately from **Tracked chat** synchronization. Connection details explicitly mark desktop execution as unknown because the native protocol has no execution acknowledgment (ACK). **Last** lighting describes the last native lighting information received. An observed native session, a current transport connection, and fresh bridge metadata are independent evidence and cannot substitute for each other.
 
 The desktop settings determine the final behavior of dial modes, command keys, joystick actions, and voice. Using the USB microphone requires selecting **Tab5 Microphone** in the computer or application. The Voice key does not switch audio sources or prove that Codex has started recording. With a Bluetooth-only connection, continue using the computer microphone. The auxiliary key may be unassigned until separate microphone keys are enabled and configured on the desktop.
 
@@ -92,15 +94,17 @@ To change computers or repair a stale bond, tap **Forget pairing** on Tab5 and c
 Native Micro HID lighting messages contain neither chat titles nor the current chat's Fast/Plan/permission text. Two local processes supplement this metadata while native USB/BLE HID handles input and lighting. The companion bridge currently targets **macOS** and requires the source repository and its Python dependencies; it is not required merely to flash the downloaded bundle. Wireless metadata uses a separate encrypted GATT service. A native Bluetooth connection alone does not supply titles or chat settings.
 
 ```sh
-git clone --branch v0.13.0 https://github.com/atovk/tab5-codex-micro.git
+git clone --branch v0.13.1 https://github.com/atovk/tab5-codex-micro.git
 cd tab5-codex-micro
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-### Titles for the six Agent keys
+### Dynamic recent chats and Agent titles
 
-Assign local chats to the six keys in desktop **Settings → Codex Micro → Agent keys → Custom assignments**. The companion reads only these explicit assignments; it does not guess the live order of a recent-chat list.
+Keep the desktop's dynamic recent-chat list; switching to six fixed chats is unnecessary. The desktop does not export a reliable live slot-to-title mapping, and the companion does not guess from visit times. If a user independently chooses **Settings → Codex Micro → Agent keys → Custom assignments**, the companion can read those explicit local titles. This remains optional.
+
+After Tab5 actually submits an Agent message to the USB/BLE transport stack, it clears the previous central chat title and Fast/Plan/permission settings and shows **Agent NN / Title not synced**. This identifies the submitted slot, not desktop focus or a selected chat. The unsynchronized state stays latched until reboot; subsequent bridge heartbeats cannot restore the old chat. The explicit chat bridge below remains available before the first Agent action.
 
 ```sh
 # Inspect configuration without opening hardware; titles are hidden by default.
@@ -134,7 +138,7 @@ In another terminal, run from the same repository:
 
 Replace `CHAT_UUID` with the **local chat UUID** available in its link. Keep the desktop app and `title_sync.py --watch` or the title service running. The bridge subscribes to the chat's accepted settings for the next turn; it does not start chats or send messages.
 
-The **Tracked chat** area identifies the target, and a separate read-only strip displays its settings. **Selecting another chat on the desktop does not automatically change the bridge target**; the bridge also does not redirect native Micro commands to that chat. Fast/Plan/Approve buttons do not change appearance based on tracked values, and the **Target not verified** notice remains visible. The state bridge is a separate foreground process; stop it with Ctrl-C. The title login service does not start it.
+Before the first Agent action, the central **Tracked chat** card identifies an explicit target, while the read-only strip above the function buttons displays that chat's next-send Fast/Standard, Plan/Default, and permission preset, including Full access. **Selecting another chat on the desktop does not automatically change the bridge target**; the bridge does not redirect native Micro commands. After an Agent message is submitted, the central title and these settings remain unsynchronized until reboot. Fast/Plan/Approve buttons do not change appearance based on tracked values, and the strip retains the **Target not verified** notice. The state bridge is a separate foreground process; stop it with Ctrl-C. The title login service does not start it.
 
 ### Metadata and privacy
 
@@ -187,7 +191,9 @@ Development primarily targets macOS and requires Git and a working C++ compiler.
 
 `hid-status` only requests state; it does not trigger keys. Input, metadata, fonts, and scrolling have host-side logic tests. Device tools cover touch, pixel restoration, sound, and themes. The new `tools/verify_transition_performance.py` measures theme, language, settings, and game-page transitions plus initial title-cache construction. It isolates native inputs and reads metrics after each completed transition, without treating command acknowledgement time as complete render time. See the [development notes](docs/development.en.md) for architecture, protocol boundaries, and validation methods.
 
-The 0.13.0 release preparation passed **379 host tests in 65.227 seconds**, built and flashed the final version, and rechecked actual computer audio reception. USB capture, mute, gain, settings persistence, and logical reconnection results are listed in the [microphone guide](docs/MICROPHONE.en.md#capture-and-validation). This round did not repeat every BLE desktop execution check.
+Version 0.13.1 passed **413 host tests in 84.484 seconds**, the release build (156.59 seconds), and same-Tab5 app-only flash/version verification. Hardware key/joystick checks, 13 input-policy cases, central single-line/horizontal-scroll checks, and theme-surface pixels passed, with zero partial/full redraw differences. English theme screenshots are updated. Offline validation passed both for the standalone bundle and after extracting its ZIP separately. See the [development guide](docs/development.en.md) for results by case. Touch diagnostics use capture mode and do not establish desktop execution. The root cause of the earlier “UI responds, desktop does not” failure remains unknown; this version does not claim a permanent fix.
+
+Historical 0.13.0 release preparation passed **379 host tests in 65.227 seconds**, built and flashed the final version, and rechecked actual computer audio reception. USB capture, mute, gain, settings persistence, and logical reconnection results are listed in the [microphone guide](docs/MICROPHONE.en.md#capture-and-validation). That round did not repeat every BLE desktop execution check.
 
 The historical 0.12.0 firmware hardware-validation baseline passed **337 host tests**, built successfully, and was flashed to hardware. Final four-frame Bluetooth dial verification passed. The maximum gap between input services during chunked capture was **1.168ms**; the independent BLE test window recorded a maximum input-sampling interval of **16.253ms**. Release preparation, including packaging regressions, passed all **341 host tests in 50.550 seconds**. See the development notes for measurement scope and details.
 
@@ -195,10 +201,11 @@ The historical 0.12.0 firmware hardware-validation baseline passed **337 host te
 
 - This third-party protocol implementation may be affected by desktop updates. Incompatible state interfaces or expired metadata show unknown rather than substituting saved defaults for real state.
 - See the [Bluetooth guide](docs/BLUETOOTH.en.md) for verified cases and unconfirmed scenarios. Controlled Fast/Plan, dial navigation highlight, and blue lighting tests do not establish every mapping, specific DOM focus, or other lighting colors. Interface presentation screenshots and historical USB results are not Bluetooth execution evidence.
-- Live settings follow one designated local chat. Agent titles require saved Custom assignments. Automatic following of desktop selection, remote chats, and reliable title matching for dynamic recent lists are not implemented.
-- The settings strip describes the **designated chat's next send**, not a running turn or the current target of native buttons. USB/BLE submission, a historical native session, and fresh bridge data cannot independently prove desktop execution.
+- Dynamic recent Agent lists remain available without a reliable live slot-to-title mapping. Submitting an Agent action clears old titles/settings and shows Agent NN / Title not synced until reboot; desktop focus is not followed automatically. The explicit local chat bridge displays state only before the first Agent action. Fixed Custom assignments titles remain optional. Remote chats are unsupported.
+- The earlier “UI responds, desktop does not” failure still has no confirmed root cause. Healthy links, input counts, and synchronization do not establish desktop execution, and added diagnostics do not guarantee permanent recovery.
+- The read-only strip above the buttons describes the **designated chat's next send**, not a running turn or the current target of native buttons. USB/BLE submission, a historical native session, and fresh bridge data cannot independently prove desktop execution.
 - Activity labels are inferred from desktop lighting colors; custom colors may affect them. Custom input mappings remain controlled by the desktop.
-- Titles use the BMP coverage of Noto Sans SC. Unsupported characters, including some emoji, are replaced individually. Each title is limited to **191 UTF-8 bytes**; received text beyond two lines scrolls. Changing UI language does not translate chat titles.
+- Titles use the BMP coverage of Noto Sans SC. Unsupported characters, including some emoji, are replaced individually. Each title is limited to **191 UTF-8 bytes**; central titles scroll horizontally when too wide, while Agent key titles scroll vertically beyond two lines. Changing UI language does not translate chat titles.
 - Automatic rotation supports two landscape orientations, with no portrait layout.
 - The firmware enables the onboard C6 as the BLE controller using compatible C6/ESP-Hosted firmware already on the tested Tab5. Other C6 firmware combinations are unverified. Battery charging and external power outputs remain disabled; the device does not charge the battery while running.
 

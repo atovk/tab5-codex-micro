@@ -2,13 +2,13 @@
 
 **简体中文** · [English](FLASHING.en.md)
 
-适用版本：**Tab5 Codex Micro 0.13.0**。硬件为 ESP32-P4 的 **M5Stack Tab5，16MB Flash／32MB PSRAM**。本指南使用预编译发布包，无需克隆仓库、安装 PlatformIO 或编译固件。
+适用版本：**Tab5 Codex Micro 0.13.1**。硬件为 ESP32-P4 的 **M5Stack Tab5，16MB Flash／32MB PSRAM**。本指南使用预编译发布包，无需克隆仓库、安装 PlatformIO 或编译固件。
 
-本版在 USB／蓝牙双模控制之外新增标准 USB 麦克风。麦克风音频仅通过 USB 传输，见 [麦克风说明](MICROPHONE.md)。**固件和字库仍通过 USB 写入，没有无线刷机功能**；刷入后按 [蓝牙连接说明](BLUETOOTH.md) 完成系统 PIN 配对及可选的标题／状态 companion 配置。本固件使用 Tab5 板载 C6 已有的兼容固件，无需单独刷写 C6，也不要刷写电脑上连接的其他开发板。其他 C6／ESP-Hosted 固件组合尚未验证。
+本版改进三栏控制台、触摸确认和动态 Agent 列表的未同步显示，保留 USB／蓝牙双模控制和标准 USB 麦克风。麦克风音频仅通过 USB 传输，见 [麦克风说明](MICROPHONE.md)。**固件和字库仍通过 USB 写入，没有无线刷机功能**；刷入后按 [蓝牙连接说明](BLUETOOTH.md) 完成系统 PIN 配对及可选的标题／状态 companion 配置。本固件使用 Tab5 板载 C6 已有的兼容固件，无需单独刷写 C6，也不要刷写电脑上连接的其他开发板。其他 C6／ESP-Hosted 固件组合尚未验证。
 
 ## 1. 下载并解压
 
-从 [0.13.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.0) 下载 **`tab5-codex-micro-0.13.0.zip`**，完整解压到一个目录。不要直接在压缩包中运行脚本，也不要只下载 GitHub 自动生成的 “Source code” 压缩包。
+从 [0.13.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.1) 下载 **`tab5-codex-micro-0.13.1.zip`**，完整解压到一个目录。不要直接在压缩包中运行脚本，也不要只下载 GitHub 自动生成的 “Source code” 压缩包。
 
 | 文件 | 用途 |
 | --- | --- |
@@ -21,7 +21,7 @@
 | `BLUETOOTH.md`、`BLUETOOTH.en.md`、`COMPANION.md` | 系统配对、自动重连及可选本地同步说明 |
 | `MICROPHONE.md`、`MICROPHONE.en.md` | 中英文 USB 麦克风说明 |
 | `images/microphone-day.png`、`images/microphone-night.png` | 供离线查看的麦克风说明插图 |
-| `assets/tab5-microphone-light-0.13.0.png`、`assets/tab5-microphone-dark-0.13.0.png` | 英文麦克风页面的真实 Tab5 帧缓冲截图 |
+| `assets/tab5-0.13.1-light-en.png`、`assets/tab5-0.13.1-dark-en.png` | English 界面的正常实机截图；真实项目聊天标题保留中文原文 |
 
 请将这些文件保留在同一目录。发布页上的独立 `.bin` 文件也可供已有工作流使用；初次安装推荐完整 ZIP，以免遗漏字库或校验文件。
 
@@ -29,7 +29,7 @@
 
 ## 2. 准备 Python 环境
 
-需要 Python **3.11+** 和一条 USB-C **数据线**。刷机工具支持 macOS／Linux；Windows 仅可离线运行 `--check`，不支持刷写。USB 麦克风实测在 macOS 上完成。原生蓝牙和 companion 的详细结果沿用 0.12.0 的 macOS 基线，本轮只检查枚举与绑定保留，没有重跑全部蓝牙联动；不代表 Linux 桌面兼容性已通过。
+需要 Python **3.11+** 和一条 USB-C **数据线**。刷机工具支持 macOS／Linux；Windows 仅可离线运行 `--check`，不支持刷写。0.13.1 已完成 UI 与输入捕获回归；USB 麦克风沿用 0.13.0 的 macOS 验证，原生蓝牙和 companion 的详细结果沿用 0.12.0 基线。本轮未重跑全部蓝牙桌面联动，也未确认 Linux 桌面兼容性。
 
 在终端进入解压目录，执行：
 
@@ -93,11 +93,13 @@ sha256sum -c SHA256SUMS
 
 使用 USB 麦克风时，在 macOS 声音输入或录音应用中选择 **Tab5 Microphone**，再打开 Tab5 的 **齿轮 → 麦克风** 调整电平、静音与增益。无需 companion 或虚拟音频驱动；Voice 保留桌面映射，不自动切换输入。蓝牙传输控制与元数据，不传输麦克风音频，详见 [麦克风说明](MICROPHONE.md)。
 
-聊天标题和真实 Fast／Plan／权限状态需要额外运行 macOS 本地桥接，不由原生 HID 灯光消息提供。下载包的刷机依赖不包含 companion；按 [蓝牙连接说明](BLUETOOTH.md#标题与状态-companion) 或本版本 [中文 README](https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/README.md#可选聊天标题和状态桥接) 准备源码及完整依赖。
+聊天标题和真实 Fast／Plan／权限状态需要额外运行 macOS 本地桥接，不由原生 HID 灯光消息提供。下载包的刷机依赖不包含 companion；按 [蓝牙连接说明](BLUETOOTH.md#标题与状态-companion) 或本版本 [中文 README](https://github.com/atovk/tab5-codex-micro/blob/v0.13.1/README.md#可选聊天标题和状态桥接) 准备源码及完整依赖。
 
-独立只读“指定聊天设置 / Tracked settings”条显示跟踪聊天下一次发送采用的真实设置，包括 Full access；未同步或过期时显示未知。Fast／Plan／Approve 原生按钮不代表该聊天的设置或操作目标，界面因此明确显示“操作目标未核对 / Target not verified”。切换桌面选中的聊天不会改变桥接目标，桥接也不会将原生按键重定向到跟踪聊天。
+控制台采用三个等宽面板，左右圆盘同尺寸；较深的摇杆增加对比度，圆内箭头可点按，与拖动共用方向阈值。中央标题充分用宽，单行显示，超长时横向滚动。尚未真实按过旋钮中心时，每次开机显示最多 8 秒操作提示；真实按下后持久记住，诊断捕获与冻结不消耗提示。未分配键使用平面空态，只显示一次“未分配”。已同步且仍新鲜、明确为 Approve／Reject／Send 的映射需要在键内松手才提交，滑出可取消未提交动作；Voice、旋钮中心、Agent 和自定义映射沿用原有按下／释放行为。
 
-“USB已提交／蓝牙已提交”只表示完整消息已交给对应传输栈，不是桌面执行回执；“USB未发送／蓝牙未发送”表示提交失败或队列拒绝，不承诺稍后发送。
+无需把动态最近 Agent 列表改成固定六个聊天。首次 Agent 操作前，中央“指定聊天 / Tracked chat”和按钮上方的连续只读状态条可显示显式桥接聊天的标题及下一次发送的 Fast／Plan／权限设置，包括 Full access；未同步或过期时显示未知。Agent 消息实际交给 USB／BLE 传输栈后，清除旧标题与设置并显示 **Agent NN / Title not synced**，锁存到重启，后续桥接心跳不会恢复旧聊天。桌面没有导出可靠的动态槽位标题映射，此空态不证明桌面焦点；桥接不自动跟随选中聊天，也不重定向原生按键。状态条保留“操作目标未核对 / Target not verified”。
+
+主屏区分 USB／BLE 链路和 Tracked chat 同步，连接详情标明桌面执行未知（原生协议无 ACK）。底部按钮图标与主标题固定；传输提交用短暂描边表示消息已交给传输栈，不表示执行成功。“USB未发送／蓝牙未发送”失败提示仍保留，表示提交失败或队列拒绝，不承诺稍后发送。[白天截图](images/tab5-0.13.1-light-en.png) 和 [黑夜截图](images/tab5-0.13.1-dark-en.png) 的界面为 English，真实跟踪标题“部署 Codex micro 到 Tab5”保留原文；截图不证明原生桌面执行。
 
 ## 后续更新
 
@@ -109,10 +111,10 @@ sha256sum -c SHA256SUMS
 
 `--skip-font` **仍会写入 factory 镜像并覆盖 NVS，不保留蓝牙绑定或本地偏好**，仅跳过字库。首次安装不要使用它。如果新版本说明要求更新字库，应重新执行默认完整刷入。更新前暂停占用串口的工具，完成后可重新启动 companion。
 
-下载包的 `flash.py` **没有 `--app-only` 模式**。确需保留绑定和偏好时，使用 [v0.13.0 源码工具](https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/tools/flash.py)；先按该版本 [源码构建说明](https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/README.md#从源码构建) 准备并构建，再运行：
+下载包的 `flash.py` **没有 `--app-only` 模式**。确需保留绑定和偏好时，使用 [v0.13.1 源码工具](https://github.com/atovk/tab5-codex-micro/blob/v0.13.1/tools/flash.py)；先按该版本 [源码构建说明](https://github.com/atovk/tab5-codex-micro/blob/v0.13.1/README.md#从源码构建) 准备并构建，再运行：
 
 ```sh
-# 在 v0.13.0 源码仓库内执行，不是在下载包目录内。
+# 在 v0.13.1 源码仓库内执行，不是在下载包目录内。
 .venv/bin/python tools/flash.py --port /dev/cu.usbmodemXXXX --skip-build --app-only
 ```
 
@@ -129,7 +131,8 @@ sha256sum -c SHA256SUMS
 | 校验失败或缺文件 | 重新下载完整发布 ZIP，全部解压到同一目录 |
 | 下载器识别为 ESP32-S3 | 停止操作，重新确认 Tab5 的 P4 端口 |
 | 字体或标题不正常 | 首次安装应包含 `title-font.bin`；重新执行不带 `--skip-font` 的完整刷入 |
-| 标题或状态显示未知 | 这是本地桥接配置或新鲜度问题；参考 README，不需因此反复刷机 |
+| 标题或状态显示未知 | 检查桥接配置及新鲜度；提交动态 Agent 操作后的 Title not synced 是预期行为，锁存到重启，不需反复刷机 |
+| Tab5 界面能动，但原生操作无响应 | 确认电脑已解锁、桌面位于目标聊天且 Micro 映射正确；仍无响应时可完全退出并重新打开桌面应用，⌘R 可能无效。历史故障根因尚未确认，本版不宣称永久修复；companion 正常或输入计数增加不证明桌面已执行 |
 | 刷完仍在下载模式 | 保持线缆连接，短按 Reset；如应用仍未出现，重新进入下载模式并运行工具 |
 
 ## 许可

@@ -24,7 +24,7 @@ class MicroControlsTests(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             result = subprocess.run([str(binary)], text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("13/13 touch tests passed", result.stdout)
+            self.assertIn("21/21 touch tests passed", result.stdout)
 
 
 if __name__ == "__main__":

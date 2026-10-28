@@ -2,13 +2,13 @@
 
 [简体中文](FLASHING.md) · **English**
 
-For **Tab5 Codex Micro 0.13.0**, targeting the ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. This guide uses a precompiled bundle. You do not need to clone the repository, install PlatformIO, or compile firmware.
+For **Tab5 Codex Micro 0.13.1**, targeting the ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. This guide uses a precompiled bundle. You do not need to clone the repository, install PlatformIO, or compile firmware.
 
-This release adds a standard USB microphone alongside USB and Bluetooth controls. Microphone audio is USB-only; see the [microphone guide](MICROPHONE.en.md). **Firmware and fonts are still flashed over USB; wireless flashing is not provided.** After flashing, follow the [Bluetooth guide](BLUETOOTH.en.md) for system PIN pairing and optional title/state companion setup. The firmware uses compatible firmware already on Tab5's onboard C6. Do not flash the C6 separately or flash other connected development boards. Other C6/ESP-Hosted firmware combinations are unverified.
+This release improves the three-panel console, touch confirmation, and unsynchronized display for dynamic Agent lists, while retaining USB/Bluetooth controls and the standard USB microphone. Microphone audio is USB-only; see the [microphone guide](MICROPHONE.en.md). **Firmware and fonts are still flashed over USB; wireless flashing is not provided.** After flashing, follow the [Bluetooth guide](BLUETOOTH.en.md) for system PIN pairing and optional title/state companion setup. The firmware uses compatible firmware already on Tab5's onboard C6. Do not flash the C6 separately or flash other connected development boards. Other C6/ESP-Hosted firmware combinations are unverified.
 
 ## 1. Download and extract
 
-Download **`tab5-codex-micro-0.13.0.zip`** from the [0.13.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.0) and extract the entire archive into one directory. Do not run the script from inside the ZIP or download only GitHub's automatically generated “Source code” archive.
+Download **`tab5-codex-micro-0.13.1.zip`** from the [0.13.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.1) and extract the entire archive into one directory. Do not run the script from inside the ZIP or download only GitHub's automatically generated “Source code” archive.
 
 | File | Purpose |
 | --- | --- |
@@ -21,7 +21,7 @@ Download **`tab5-codex-micro-0.13.0.zip`** from the [0.13.0 Release](https://git
 | `BLUETOOTH.md`, `BLUETOOTH.en.md`, `COMPANION.md` | System pairing, automatic reconnection, and optional local synchronization |
 | `MICROPHONE.md`, `MICROPHONE.en.md` | Chinese and English USB microphone guides |
 | `images/microphone-day.png`, `images/microphone-night.png` | Microphone guide images for offline viewing |
-| `assets/tab5-microphone-light-0.13.0.png`, `assets/tab5-microphone-dark-0.13.0.png` | Real Tab5 microphone-page captures in English |
+| `assets/tab5-0.13.1-light-en.png`, `assets/tab5-0.13.1-dark-en.png` | Normal device captures with English UI; the actual project chat title retains its original Chinese text |
 
 Keep these files in the same directory. Separate `.bin` assets are available for existing workflows, but the complete ZIP is recommended for a first installation so the font and checksums are not omitted.
 
@@ -29,7 +29,7 @@ The default full flash replaces the existing Tab5 firmware and partition layout 
 
 ## 2. Prepare Python
 
-Use Python **3.11+** and a USB-C **data cable**. The flashing helper supports macOS/Linux. Windows supports offline `--check` only; flashing is not supported. USB microphone checks were performed on macOS. Detailed native Bluetooth and companion results retain the 0.12.0 macOS baseline; this release checked enumeration and bond retention without repeating every Bluetooth execution case. These checks do not establish Linux desktop compatibility.
+Use Python **3.11+** and a USB-C **data cable**. The flashing helper supports macOS/Linux. Windows supports offline `--check` only; flashing is not supported. Version 0.13.1 passed UI and captured-input regressions. USB microphone evidence retains the 0.13.0 macOS baseline, and detailed native Bluetooth/companion results retain the 0.12.0 baseline. This round did not repeat every Bluetooth desktop action or confirm Linux desktop compatibility.
 
 Open a terminal in the extracted directory:
 
@@ -93,11 +93,13 @@ Configure the device in **Settings → Codex Micro** in the Codex desktop app. D
 
 For USB microphone input, select **Tab5 Microphone** in macOS Sound Input or the recording application, then open **Gear → Microphone** on Tab5 for meters, mute, and gain. It needs no companion or virtual audio driver. Voice keeps its desktop mapping without automatically selecting the input. Bluetooth carries controls and metadata, not microphone audio; see the [microphone guide](MICROPHONE.en.md).
 
-Chat titles and real Fast/Plan/permission metadata require the additional macOS local bridge; they are not supplied by native HID lighting messages. The bundle's flashing dependencies do not include the companion. Use the [Bluetooth guide](BLUETOOTH.en.md#title-and-settings-companion) or this version's [English README](https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/README.en.md#optional-chat-titles-and-settings-bridge) to prepare the source and full dependencies.
+Chat titles and real Fast/Plan/permission metadata require the additional macOS local bridge; they are not supplied by native HID lighting messages. The bundle's flashing dependencies do not include the companion. Use the [Bluetooth guide](BLUETOOTH.en.md#title-and-settings-companion) or this version's [English README](https://github.com/atovk/tab5-codex-micro/blob/v0.13.1/README.en.md#optional-chat-titles-and-settings-bridge) to prepare the source and full dependencies.
 
-A separate read-only **Tracked settings** strip displays the tracked chat's real next-send settings, including Full access. Missing or expired metadata is unknown. Native Fast/Plan/Approve buttons do not represent that chat's settings or establish their action target, so the interface explicitly shows **Target not verified**. Changing the selected desktop chat does not change the bridge target, and the bridge does not redirect native keys to the tracked chat.
+The console uses three equally wide panels and matching side disc sizes. A darker joystick improves contrast; its inner arrows are tappable and use the same directional threshold as dragging. The central title uses the available width on one line and scrolls horizontally when too long. Until a real encoder-center press, a dial hint appears for at most eight seconds per boot. A real press is remembered persistently; diagnostic capture and frozen effects do not consume the hint. Unassigned keys use a flat empty state with one **Unassigned** label. A fresh synchronized mapping explicitly identified as Approve/Reject/Send submits only on release inside its key; sliding out cancels an unsubmitted action. Voice, encoder-center, Agent, and custom mappings retain their original press/release behavior.
 
-**USB submitted / Bluetooth submitted** only means the complete message has been handed to the corresponding transport stack, not that the desktop executed it. **USB not sent / Bluetooth not sent** means submission failed or the queue rejected the event, with no promise of later delivery.
+Keep the dynamic recent Agent list without switching to six fixed chats. Before the first Agent action, the central **Tracked chat** card and continuous read-only strip above the buttons can display an explicit bridge target's title and next-send Fast/Plan/permission settings, including Full access. Missing or expired metadata is unknown. After an Agent message is actually handed to the USB/BLE transport stack, old titles/settings are cleared and **Agent NN / Title not synced** stays latched until reboot; bridge heartbeats cannot restore the old chat. The desktop exports no reliable dynamic slot-to-title mapping, so this empty state does not establish desktop focus. The bridge does not automatically follow selection or redirect native keys. The strip retains **Target not verified**.
+
+The main screen separates USB/BLE links from Tracked chat synchronization; connection details mark desktop execution as unknown (the native protocol has no ACK). Bottom button icons and main labels stay fixed. A brief outline indicates transport submission, not successful execution. **USB not sent / Bluetooth not sent** failure notices remain: submission failed or the queue rejected the event, with no promise of later delivery. The [light](images/tab5-0.13.1-light-en.png) and [dark](images/tab5-0.13.1-dark-en.png) screenshots use English UI and retain the actual tracked project title, “部署 Codex micro 到 Tab5,” in its original language. They do not establish native desktop execution.
 
 ## Later updates
 
@@ -109,10 +111,10 @@ Download and extract the complete ZIP for each new version and follow its instru
 
 `--skip-font` **still writes the factory image and overwrites NVS, so it does not preserve Bluetooth bonds or local preferences**. It only skips the font. Do not use it for the first installation. If release notes require a font update, use the default full flash again. Pause tools using the serial port before updating and restart the companion afterward.
 
-The bundle's `flash.py` **does not provide `--app-only`**. To preserve bonds and preferences, use the [v0.13.0 source helper](https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/tools/flash.py). Prepare and build that version using [Build from source](https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/README.en.md#build-from-source), then run:
+The bundle's `flash.py` **does not provide `--app-only`**. To preserve bonds and preferences, use the [v0.13.1 source helper](https://github.com/atovk/tab5-codex-micro/blob/v0.13.1/tools/flash.py). Prepare and build that version using [Build from source](https://github.com/atovk/tab5-codex-micro/blob/v0.13.1/README.en.md#build-from-source), then run:
 
 ```sh
-# Run in the v0.13.0 source checkout, not the downloaded bundle directory.
+# Run in the v0.13.1 source checkout, not the downloaded bundle directory.
 .venv/bin/python tools/flash.py --port /dev/cu.usbmodemXXXX --skip-build --app-only
 ```
 
@@ -129,7 +131,8 @@ This writes only the application at `0x10000`. **It applies only when this proje
 | Missing files or checksum failure | Download the complete release ZIP again and extract all files together |
 | Downloader identifies ESP32-S3 | Stop and identify the P4 Tab5 port again |
 | Broken fonts or titles | Include `title-font.bin` on first installation; run a full flash without `--skip-font` |
-| Titles or states are unknown | Check local bridge configuration and freshness using the README; repeated flashing is unnecessary |
+| Titles or states are unknown | Check bridge configuration and freshness. Title not synced after submitting a dynamic Agent action is expected and stays latched until reboot; repeated flashing is unnecessary |
+| Tab5 UI works, but native controls do not respond | Ensure the computer is unlocked, the target chat is open, and Micro mappings are correct. If needed, fully quit and reopen the desktop app; ⌘R may have no effect. The historical failure still has no confirmed root cause, and this version does not claim a permanent fix. A healthy companion or rising input count does not prove desktop execution |
 | Device remains in download mode | Keep the cable connected and briefly press Reset. If the application still does not appear, re-enter download mode and run the helper again |
 
 ## License

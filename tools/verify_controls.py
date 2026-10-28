@@ -12,11 +12,14 @@ import math
 from pathlib import Path
 import time
 
+from control_layout import CURRENT, VERSION, for_firmware
 from tab5_transport import open_serial
 from verify_device import read_line
 
 
-def verify(output: Path, firmware: str = "0.11.1") -> dict:
+def verify(output: Path, firmware: str = VERSION) -> dict:
+    layout = for_firmware(firmware)
+    dx, dy, sx, sy = layout.dial_x, layout.dial_y, layout.stick_x, layout.stick_y
     events: list[dict] = []
     checks: dict = {}
     with open_serial(timeout=12) as connection:
@@ -107,8 +110,8 @@ def verify(output: Path, firmware: str = "0.11.1") -> dict:
                 start = len(events)
                 for step in range(73):
                     angle = (1 if clockwise else -1) * math.tau * step / 72
-                    touch(round(244+96*math.cos(angle)), round(352+96*math.sin(angle)), True)
-                touch(340,352,False)
+                    touch(round(dx+96*math.cos(angle)), round(dy+96*math.sin(angle)), True)
+                touch(dx+96,dy,False)
                 key = "ENC_CW" if clockwise else "ENC_CC"
                 turns = events[start:]
                 assert len(turns) == 24, (key,len(turns),turns)
@@ -116,10 +119,10 @@ def verify(output: Path, firmware: str = "0.11.1") -> dict:
                 checks[key] = len(turns)
 
             start = len(events)
-            touch(244,352,True)
+            touch(dx,dy,True)
             time.sleep(.65)
-            touch(246,353,True)
-            touch(244,352,False)
+            touch(dx+2,dy+1,True)
+            touch(dx,dy,False)
             assert events[start:] == [hid("ENC",1),hid("ENC",0)], events[start:]
             checks["encoder_hold_ms"] = 650
 
@@ -139,10 +142,11 @@ def verify(output: Path, firmware: str = "0.11.1") -> dict:
             assert events[start:] == [hid("AG00",1),hid("AG00",0)], events[start:]
             checks["gesture_capture"] = True
 
-            cardinal = [(894,352,0),(802,444,.25),(710,352,.5),(802,260,.75)]
+            r = layout.stick_radius
+            cardinal = [(sx+r,sy,0),(sx,sy+r,.25),(sx-r,sy,.5),(sx,sy-r,.75)]
             for x,y,angle in cardinal:
                 start = len(events)
-                touch(802,352,True)
+                touch(sx,sy,True)
                 touch(x,y,True)
                 # Holding a direction must not synthesize repeated actions.
                 time.sleep(.06)
@@ -157,6 +161,29 @@ def verify(output: Path, firmware: str = "0.11.1") -> dict:
                 assert direction[-1]["p"]["d"] == 0, direction
             checks["joystick_cardinal_and_neutral"] = True
 
+            if layout is CURRENT:
+                # These visible arrows now sit inside the disk. A direct tap
+                # must activate its direction without first touching the knob.
+                arrow = layout.stick_arrow_radius
+                arrow_targets = (("right", sx+arrow, sy, 0),
+                                 ("down", sx, sy+arrow, .25),
+                                 ("left", sx-arrow, sy, .5),
+                                 ("up", sx, sy-arrow, .75))
+                checked_arrows = []
+                for name, x, y, angle in arrow_targets:
+                    start = len(events)
+                    touch(x,y,True); touch(x,y,False)
+                    direction = events[start:]
+                    assert len(direction) == 2, direction
+                    assert all(event["m"] == "v.oai.rad" for event in direction), direction
+                    assert abs(direction[0]["p"]["a"]-angle) < .0001, direction
+                    assert .5 <= direction[0]["p"]["d"] <= 1, direction
+                    assert direction[-1]["p"]["d"] == 0, direction
+                    checked_arrows.append({"direction": name, "x": x, "y": y,
+                                           "angle": angle, "distance": direction[0]["p"]["d"],
+                                           "released_to_neutral": True})
+                checks["joystick_arrow_targets"] = checked_arrows
+
             # Complete the preceding stick's neutral render before measuring
             # only dial motion; otherwise the first frame contains both controls.
             time.sleep(.2)
@@ -164,8 +191,8 @@ def verify(output: Path, firmware: str = "0.11.1") -> dict:
             start = len(events)
             for step in range(25):
                 angle = math.tau*step/24
-                touch(round(244+96*math.cos(angle)),round(352+96*math.sin(angle)),True)
-            touch(340,352,False)
+                touch(round(dx+96*math.cos(angle)),round(dy+96*math.sin(angle)),True)
+            touch(dx+96,dy,False)
             turns = events[start:]
             assert len(turns) == 24 and all(event == hid("ENC_CW",2) for event in turns), turns
             checks["ENC_CW_sparse_samples"] = len(turns)
@@ -177,11 +204,11 @@ def verify(output: Path, firmware: str = "0.11.1") -> dict:
 
             command("PERF_RESET", "OK")
             start = len(events)
-            touch(802,352,True)
+            touch(sx,sy,True)
             for step in range(25):
                 angle = math.tau*step/24
-                touch(round(802+80*math.cos(angle)),round(352+80*math.sin(angle)),True)
-            touch(882,352,False)
+                touch(round(sx+80*math.cos(angle)),round(sy+80*math.sin(angle)),True)
+            touch(sx+80,sy,False)
             stick_events = events[start:]
             assert stick_events and all(event["m"] == "v.oai.rad" for event in stick_events), stick_events
             assert stick_events[-1]["p"]["d"] == 0, stick_events
@@ -209,7 +236,7 @@ def verify(output: Path, firmware: str = "0.11.1") -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output",type=Path,nargs="?")
-    parser.add_argument("--firmware",default="0.11.1",help="Exact expected firmware version")
+    parser.add_argument("--firmware",default=VERSION,help="Exact firmware version with a verified control layout")
     args=parser.parse_args()
     output=args.output or Path(f"artifacts/controls-qa-{args.firmware.removeprefix('tab5-micro-')}.json")
     print(json.dumps(verify(output,args.firmware),ensure_ascii=False,indent=2))

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Verify synthetic two-line titles and deterministic vertical scrolling.
+"""Verify two-line Agent titles and the single-line tracked-title marquee.
 
 This tool never sends TITLES or HOST_CONFIG. All six visible slot titles and
 the explicitly tracked chat are replaced only inside an owned input-capture
-preview. Four optional framebuffer captures test motion and dirty restoration.
+preview. Optional framebuffer captures test both motion axes and dirty restoration.
 No native host input or captured key/joystick event is expected.
 """
 from __future__ import annotations
@@ -15,17 +15,18 @@ import time
 
 from PIL import Image, ImageChops
 
+from control_layout import CURRENT as LAYOUT, FIRMWARE, VERSION
 from tab5_transport import open_serial
 from verify_device import read_line
 from verify_neon import Session, changed_pixels, require
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.11.1"
-FIRMWARE = f"tab5-micro-{VERSION}"
 ROW_HEIGHT = 25
 VIEW_HEIGHT = 50
 STEP_MS = 3200
+HORIZONTAL_DWELL_MS = 2200
+HORIZONTAL_PIXEL_MS = 25
 SHORT_TITLE = "合成短题"
 TWO_LINE_TITLE = "春夏秋冬天地玄黄宇宙洪荒"
 LONG_TITLE = "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳云腾致雨露结为霜"
@@ -167,7 +168,11 @@ def layout_contract(status: dict) -> list[dict]:
         require(panel["ready"] and panel["cached_bytes"] > 0, f"Panel {index} has no cached title")
         require(panel["height"] == VIEW_HEIGHT and panel["line_height"] == ROW_HEIGHT,
                 f"Panel {index} has unexpected row/viewport geometry")
-        require(panel["width"] == (182 if index == 6 else 162), f"Panel {index} has unexpected width")
+        width = LAYOUT.title_box[2] - LAYOUT.title_box[0] if index == 6 else 162
+        require(panel["width"] == width, f"Panel {index} has unexpected width")
+        if index == 6:
+            central_contract(panel, overflow=False)
+            continue
         require(panel["visible_lines"] == min(panel["lines"], 2),
                 f"Panel {index} has unexpected visible line count")
         expected_max = panel["lines"] * ROW_HEIGHT - 1 if panel["lines"] > 2 else 0
@@ -183,11 +188,30 @@ def layout_contract(status: dict) -> list[dict]:
     return panels
 
 
+def central_contract(panel: dict, overflow: bool) -> None:
+    require(panel["ready"] and panel["cached_bytes"] > 0,
+            "Tracked title has no retained raster")
+    require(panel["width"] == LAYOUT.title_box[2] - LAYOUT.title_box[0]
+            and panel["height"] == VIEW_HEIGHT and panel["line_height"] == ROW_HEIGHT,
+            "Tracked title has unexpected viewport geometry")
+    require(panel["lines"] == 1 and panel["visible_lines"] == 1,
+            "Tracked title must remain one line even when it overflows")
+    maximum = panel["max_offset"]
+    require((maximum > 0) is overflow and panel["offset"] <= maximum,
+            "Tracked title has an invalid horizontal scroll range")
+    expected_cycle = 2 * (HORIZONTAL_DWELL_MS + maximum * HORIZONTAL_PIXEL_MS) if maximum else 0
+    require(panel["cycle_ms"] == expected_cycle,
+            "Tracked title does not use the horizontal dwell/return cycle")
+
+
 def compare_motion(first: Path, second: Path, output: Path, index: int = 2) -> dict:
     with Image.open(first) as a, Image.open(second) as b:
         difference = ImageChops.difference(a.convert("RGB"), b.convert("RGB"))
-    x, y = 28 + 206 * index + 16, 133
-    box = (x, y, x + 162, y + VIEW_HEIGHT)
+    if index == 6:
+        box = LAYOUT.title_box
+    else:
+        x, y = 28 + 206 * index + 16, 133
+        box = (x, y, x + 162, y + VIEW_HEIGHT)
     inside = changed_pixels(difference.crop(box))
     outside = difference.copy()
     outside.paste((0, 0, 0), box)
@@ -205,6 +229,48 @@ def compare_restoration(dirty: Path, full: Path, output: Path) -> dict:
     difference.save(output)
     require(count == 0, f"Dirty title replacement differs from a full rebuild at {count} pixels")
     return {"changed_pixels": count, "difference_path": str(output.resolve())}
+
+
+def central_ink(path: Path) -> Image.Image:
+    # The fixed light-theme tray is brighter than the title. Compare the dark
+    # glyph cores so harmless RGB565 antialiasing over its gradient is ignored.
+    with Image.open(path) as image:
+        crop = image.convert("RGB").crop(LAYOUT.title_box)
+    mask = Image.new("L", crop.size)
+    mask.putdata([255 if max(pixel) < 100 else 0 for pixel in crop.get_flattened_data()])
+    return mask
+
+
+def single_line_pixels(path: Path) -> dict:
+    mask = central_ink(path)
+    bounds = mask.getbbox()
+    require(bounds is not None and changed_pixels(mask) > 20,
+            "Tracked single-line title has no visible ink")
+    require(bounds[3] - bounds[1] <= ROW_HEIGHT + 3
+            and bounds[1] >= 8 and bounds[3] <= VIEW_HEIGHT - 8,
+            "Tracked title ink occupies multiple rows or is not vertically centered")
+    return {"ink_bounds": list(bounds), "dark_ink_pixels": changed_pixels(mask),
+            "viewport": list(LAYOUT.title_box)}
+
+
+def compare_horizontal_motion(first: Path, second: Path, output: Path, offset: int = 20) -> dict:
+    result = compare_motion(first, second, output, index=6)
+    result["first_single_line"] = single_line_pixels(first)
+    result["second_single_line"] = single_line_pixels(second)
+    a, b = central_ink(first), central_ink(second)
+    require(0 < offset < a.width, "Horizontal pixel displacement must fit the viewport")
+    # The second frame must be the same glyph cores shifted left by precisely
+    # the diagnostic offset, with no vertical displacement. Ignore new pixels
+    # entering at the right edge; they were outside the first frame's crop.
+    old = a.crop((offset, 0, a.width, a.height))
+    moved = b.crop((0, 0, b.width - offset, b.height))
+    mismatch = changed_pixels(ImageChops.difference(old, moved))
+    ink = max(changed_pixels(old), changed_pixels(moved))
+    require(ink > 20 and mismatch <= max(4, ink // 20),
+            "Tracked title pixels did not move horizontally by the expected offset")
+    result.update({"horizontal_offset_pixels": offset, "aligned_ink_pixels": ink,
+                   "aligned_ink_mismatch_pixels": mismatch})
+    return result
 
 
 def two_line_pixels(path: Path) -> dict:
@@ -308,15 +374,27 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
                 set_clock(session, before, index, 50000, offset=0)
             report["checks"]["one_and_two_lines_static"] = True
 
-            # A real tracked-chat title uses the same policy without modifying
-            # the explicitly selected desktop target or its saved configuration.
+            # The center remains a single line and moves horizontally, without
+            # modifying the selected desktop target or saved configuration.
             apply_preview(session, tracked=LONG_TITLE)
-            current = wait_status(session, before, lambda state: scrolls(state)[6]["lines"] > 2,
+            current = wait_status(session, before, lambda state: scrolls(state)[6]["max_offset"] > 20,
                                   "Tracked long title did not overflow")
-            set_clock(session, before, 6, 0, offset=0, elapsed=0)
-            set_clock(session, before, 6, 2700, offset=12, elapsed=2700)
+            central = scrolls(current)[6]
+            central_contract(central, overflow=True)
+            travel = central["max_offset"] * HORIZONTAL_PIXEL_MS
+            cycle = central["cycle_ms"]
+            central_steps = ((0, 0), (2199, 0), (2200, 0), (2700, 20),
+                             (2200 + travel, central["max_offset"]),
+                             (4400 + travel, central["max_offset"]),
+                             (4900 + travel, central["max_offset"] - 20),
+                             (cycle, 0))
+            report["checks"]["tracked_horizontal_dwell_and_return"] = [
+                {"now_ms": now, **scrolls(set_clock(session, before, 6, now,
+                                                    offset=offset, elapsed=now))[6]}
+                for now, offset in central_steps]
             apply_preview(session)
             wait_status(session, before, lambda state: scrolls(state)[6]["lines"] == 1
+                        and scrolls(state)[6]["max_offset"] == 0
                         and scrolls(state)[6]["offset"] == 0 and scrolls(state)[6]["elapsed_ms"] == 0,
                         "Tracked title replacement did not reset scrolling")
             report["checks"]["tracked_title_policy_and_reset"] = True
@@ -402,7 +480,41 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
                 report["checks"]["dirty_restoration"] = compare_restoration(
                     dirty, full, output.parent / f"tab5-title-restoration-diff-{VERSION}.png")
                 report["checks"]["overflow_to_short_reset"] = scrolls(reset)[2]
-                report["checks"]["pixel_scope"] = "Synthetic light theme; motion viewport and full-frame restoration"
+
+                # Keep all Agent titles static while testing the central title
+                # independently, then compare a dirty long-to-short replacement
+                # with a fresh complete canvas of that exact same state.
+                apply_preview(session, replacement, tracked=LONG_TITLE)
+                wait_status(session, before, lambda state: scrolls(state)[6]["max_offset"] > 20,
+                            "Tracked pixel fixture did not overflow")
+                set_clock(session, before, 6, 0, offset=0, elapsed=0)
+                central_top = output.parent / f"tab5-tracked-title-start-{VERSION}.png"
+                report["captures"].append(session.screenshot(central_top))
+                set_clock(session, before, 6, 2700, offset=20, elapsed=2700)
+                central_middle = output.parent / f"tab5-tracked-title-moving-{VERSION}.png"
+                report["captures"].append(session.screenshot(central_middle))
+                report["checks"]["tracked_horizontal_motion_pixels"] = compare_horizontal_motion(
+                    central_top, central_middle,
+                    output.parent / f"tab5-tracked-title-motion-diff-{VERSION}.png")
+                apply_preview(session, replacement)
+                central_reset = wait_status(session, before,
+                    lambda state: scrolls(state)[6]["ready"] and scrolls(state)[6]["lines"] == 1
+                    and scrolls(state)[6]["max_offset"] == 0 and scrolls(state)[6]["offset"] == 0
+                    and scrolls(state)[6]["elapsed_ms"] == 0,
+                    "Tracked overflow-to-short replacement did not reset scrolling")
+                central_dirty = output.parent / f"tab5-tracked-title-short-dirty-{VERSION}.png"
+                report["captures"].append(session.screenshot(central_dirty))
+                set_theme(session, before, "dark")
+                set_theme(session, before, "light")
+                set_clock(session, before, 6, 2700, offset=0, elapsed=0)
+                central_full = output.parent / f"tab5-tracked-title-short-full-{VERSION}.png"
+                report["captures"].append(session.screenshot(central_full))
+                report["checks"]["tracked_dirty_restoration"] = compare_restoration(
+                    central_dirty, central_full,
+                    output.parent / f"tab5-tracked-title-restoration-diff-{VERSION}.png")
+                report["checks"]["tracked_overflow_to_short_reset"] = scrolls(central_reset)[6]
+                report["checks"]["tracked_short_single_line_pixels"] = single_line_pixels(central_full)
+                report["checks"]["pixel_scope"] = "Synthetic light theme; Agent vertical and tracked horizontal motion, independent full-frame restorations"
             else:
                 replacement = list(TITLES)
                 replacement[2] = SHORT_TITLE
@@ -461,7 +573,7 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "artifacts/qa/title-scroll-0.11.1.json")
+    parser.add_argument("--output", type=Path, default=ROOT / f"artifacts/qa/title-scroll-{VERSION}.json")
     parser.add_argument("--port")
     parser.add_argument("--timeout", type=float, default=10)
     parser.add_argument("--no-screenshots", action="store_true")

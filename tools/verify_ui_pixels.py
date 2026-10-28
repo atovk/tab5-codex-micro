@@ -13,13 +13,12 @@ import time
 
 from PIL import Image, ImageChops, ImageDraw
 
+from control_layout import CURRENT as LAYOUT, FIRMWARE, VERSION
 from tab5_transport import open_serial
 from verify_host_feedback import chat_fixture, check_fixture, feedback_snapshot, preview
 from verify_neon import Session, check_safety, require
 
 ARTIFACTS = Path(__file__).resolve().parents[1] / "artifacts"
-VERSION = "0.11.1"
-FIRMWARE = f"tab5-micro-{VERSION}"
 
 
 def verify(output: Path, port: str | None = None, timeout: float = 10) -> dict:
@@ -101,17 +100,17 @@ def verify(output: Path, port: str | None = None, timeout: float = 10) -> dict:
                 touch(x, y, False); time.sleep(.06)
             report["pressed_and_released_keys"] = len(targets)
 
-            touch(244, 352, True)
+            touch(LAYOUT.dial_x, LAYOUT.dial_y, True)
             time.sleep(.65)
             report["captures"].append(screenshot(
                 directory / f"tab5-longpress-{VERSION}.png"))
-            touch(244, 352, False)
-            touch(802, 352, True)
-            touch(866, 416, True)
+            touch(LAYOUT.dial_x, LAYOUT.dial_y, False)
+            touch(LAYOUT.stick_x, LAYOUT.stick_y, True)
+            touch(LAYOUT.stick_x + 64, LAYOUT.stick_y + 64, True)
             time.sleep(.1)
             report["captures"].append(screenshot(
                 directory / f"tab5-stick-{VERSION}.png"))
-            touch(866, 416, False)
+            touch(LAYOUT.stick_x + 64, LAYOUT.stick_y + 64, False)
             time.sleep(.2)
             # Exercise real-state invalidation paths as an isolated preview:
             # Standard -> Fast, Plan -> default and read-only -> Full access.

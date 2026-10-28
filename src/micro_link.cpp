@@ -11,6 +11,7 @@
 #include "ui_locale.h"
 #include "micro_transport.h"
 #include "micro_connection.h"
+#include "agent_selection.h"
 #include <cmath>
 #include <Arduino.h>
 #include <algorithm>
@@ -329,6 +330,11 @@ void serviceTransmit(Link link) {
   if (!outgoing.submitted(count,completed) || completed.tag.kind==MicroTransport::Kind::Response) return;
   ++sentKeys; ++target.inputsSubmitted;
   if (link==selection.active() && completed.tag.kind==MicroTransport::Kind::Key && completed.tag.key>=0) {
+    if (AgentSelection::submitted(model.selectedAgent, completed.tag.key,
+                                  completed.tag.action, inputsSuppressed())) {
+      model.hostChat={};
+      chatReceived=false;
+    }
     MicroUI::Event event;
     event.key=MicroTransport::keys[completed.tag.key]; event.action=completed.tag.action;
     actionFeedback(event,true);
@@ -666,6 +672,7 @@ bool applyHostConfig(const char *payload,bool usbAck) {
   bool available=false,chatAvailable=false;
   if (deserializeJson(doc,payload) || !readConfig(doc,next,available)
       || !readChat(doc,nextChat,chatAvailable)) return false;
+  AgentSelection::filterExplicitTarget(model.selectedAgent,nextChat,chatAvailable);
   next.fresh=available && selection.active()!=Link::None;
   nextChat.fresh=chatAvailable && selection.active()!=Link::None;
   model.hostConfig=next; configReceived=available; configAt=millis();
@@ -678,6 +685,9 @@ bool previewHostState(const char *payload) {
   JsonDocument doc;
   if (deserializeJson(doc,payload) || !doc.is<JsonObject>()) return false;
   auto next=lightingPreview ? previewModel : model;
+  // Explicit capture fixtures own their displayed target only. They cannot
+  // select an Agent or clear the real selection latch in the live model.
+  next.selectedAgent=-1;
   bool keys=false,ambient=false;
   if (!readRgb(doc["rgb"],next.hostLights,keys,ambient)) return false;
   JsonDocument config; config.set(doc["config"]);
@@ -708,6 +718,7 @@ void diagnostics() {
   d["theme"]=MicroUI::theme()==MicroUI::Theme::Dark ? "dark" : "light";
   d["language"]=UiLocale::english() ? "en" : "zh";
   d["uptime_ms"]=millis();
+  d["selected_agent"]=model.selectedAgent;
   d["title_font"]["loaded"]=UiTitleFont::loaded();
   d["title_font"]["glyphs"]=UiTitleFont::glyphCount();
   d["title_font"]["asset_bytes"]=UiTitleFont::assetBytes();

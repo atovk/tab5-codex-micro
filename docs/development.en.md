@@ -6,6 +6,14 @@ This page describes the project structure, protocol boundaries, validation tools
 
 Download precompiled **0.12.0 USB/BLE** firmware, the font, and bilingual flashing guides from the [0.12.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0). This page records the hardware checks completed before release and their boundaries. Historical results apply only to their labeled version and test cases and are not Bluetooth evidence for other versions. Usage steps are in the [Bluetooth guide](BLUETOOTH.en.md).
 
+## 0.13.1 console and interaction improvements
+
+This version uses three equally wide panels and matching side disc sizes. A darker joystick improves contrast, with tappable arrows inside its disc using the same directional threshold as dragging. The center retains Tracked chat and uses the available title width on one line, scrolling horizontally only when too long. The continuous chat-settings strip remains above the bottom function keys, with bottom icons and main labels fixed. Until a real encoder-center press, a hint appears for at most eight seconds per boot. A real press is remembered persistently; diagnostic capture and frozen effects do not consume the hint. A flat unassigned key shows its label once. The [light](images/tab5-0.13.1-light-en.png) / [dark](images/tab5-0.13.1-dark-en.png) screenshots show the normally running English UI and real bridge state. The actual tracked title, “部署 Codex micro 到 Tab5,” concerns this public project and retains its original Chinese text. Screenshots do not establish native desktop execution.
+
+The desktop's dynamic recent Agent list remains available. The desktop exports no reliable live slot-to-title mapping. After an Agent message is actually submitted to the USB/BLE transport stack, `include/agent_selection.h` latches its slot and invalidates the previous central chat and Fast/Plan/permission settings, showing Agent NN / Title not synced. The latch lasts until reboot; bridge heartbeats cannot restore the old target. The explicit chat bridge remains available before the first Agent action. This does not infer desktop focus or implement automatic following of selected chats.
+
+The main screen separates USB/BLE link state from Tracked chat synchronization. Transport submission uses a brief outline, failure text remains, and connection details mark desktop execution as unknown because the native protocol has no execution ACK. The historical “UI responds, desktop does not” failure still has no confirmed root cause; this version does not claim a permanent fix. Current validation results are recorded below. Downloads and source are available at [v0.13.1](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.1).
+
 ## Project structure
 
 | Path | Purpose |
@@ -16,6 +24,7 @@ Download precompiled **0.12.0 USB/BLE** firmware, the font, and bilingual flashi
 | `src/micro_ble.cpp`, `include/ble_pairing_policy.h` | C6 BLE HID, encrypted GATT, PIN pairing window, and bond policy |
 | `src/ble_ecc_compat.c`, `tools/ble_ecc_patch.py`, `tools/ble_security_patch.py` | Pinned-SDK ECC compatibility and local NimBLE authentication/HID Report fixes |
 | `include/micro_connection.h` | USB/BLE session isolation, input selection, and release handling on switches |
+| `include/control_layout.h`, `include/agent_selection.h` | Shared three-panel geometry and the unknown-target latch after Agent submission |
 | `src/micro_games.cpp` | Three local touch games |
 | `src/micro_sound.cpp` | Sound queue and I2S playback |
 | `src/micro_orientation.cpp` | IMU landscape orientation and synchronized touch coordinates |
@@ -96,7 +105,8 @@ Synthetic coverage includes identity checks, MTU fragmentation, notification ass
 | Clockwise/counterclockwise outer-ring motion | 24 steps per revolution; `ENC_CW` / `ENC_CC`, `act:2` |
 | Dial center | `ENC`, press `act:1`, release `act:0` |
 | Joystick drag | `v.oai.rad`, normalized angle and distance; release sends the centered state |
-| Agent/Command button | Paired press and release events |
+| Fresh synchronized Approve/Reject/Send mapping | Paired press/release only on release inside its key; sliding out cancels an unsubmitted action |
+| Agent/Voice/other command keys | Original native press/release; custom, unknown, or stale mappings do not use release confirmation |
 
 A gesture remains captured from first contact until release. Crossing another button does not trigger it. Crossing the dial center reanchors its angle to prevent jumps. There is no inertial input after release. The desktop application interprets native dial modes, long presses, microphone behavior, and custom actions; firmware preserves those events rather than substituting generic keyboard shortcuts.
 
@@ -104,7 +114,9 @@ Version 0.11.1 puts native inputs and protocol replies in a bounded queue and at
 
 Within the same USB session, expired inputs, a full queue, or diagnostic suspension cancel unsent actions. Releases and joystick neutral for already-submitted controls take priority, and new presses are rejected until recovery is submitted. A true USB unmount clears the queue, session, and recovery state. Reconnection never replays old presses, turns, releases, or partial replies. A release can itself trigger a desktop action, so recovery must not cross USB sessions.
 
-The **USB not sent** button receipt means submission failed or the queue rejected the event. It does not mean that the event remains queued or promise later delivery. **USB submitted** appears only after a complete message has been successfully handed to the USB stack. Submission does not prove that the desktop received the message or executed its mapping.
+Version 0.13.1 delays submission only for fresh synchronized mappings explicitly identified as Approve/Reject/Send, requiring release inside the original key. Sliding out can cancel an unsubmitted action. Voice, encoder-center, Agent, and custom mappings retain their existing semantics so confirmation does not break push-to-talk or holds.
+
+The **USB not sent / BLE not sent** button notice means submission failed or the queue rejected the event. It does not mean that the event remains queued or promise later delivery. Version 0.13.1 uses a brief outline only after the complete message reaches the transport stack, keeping icons and main labels fixed. Submission does not prove desktop receipt or execution; connection details retain **Desktop execution unknown (no ACK)**.
 
 `INPUT_TEST` uses the same touch path and event serializer, but returns generated events through CDC and suppresses computer-side HID actions. It exits after 60 seconds without test input. After capture ends, an existing finger must lift before computer control resumes. Captured events alone do not prove that the desktop application executed an action.
 
@@ -114,7 +126,11 @@ Native Micro lighting messages retain color, brightness, effect, speed, and magi
 
 The title companion resolves explicit local Custom assignments and reads only their required titles by ID. It does not infer slot order from recent-access timestamps. Received titles have a 191-byte UTF-8 limit; truncation occurs only at complete character boundaries. `TITLES` and `HOST_CONFIG` have independent acknowledgements and share one uint32 sequence number per batch. A failed acknowledgement for either packet does not prevent the other packet from being attempted, and failed batches can be retried.
 
-The optional `HOST_CONFIG` field `joystick_up` accepts only `unknown` or `plan`. The companion sends `plan` only when Up maps to `composer.togglePlanMode` in a fully valid desktop v1 layout; an omitted `analogStick` uses the verified desktop default. Custom or invalid mappings, unavailable configuration sources, and older packets without the field resolve to `unknown`. This reports a saved mapping, not the live action target or proof of execution, and exposes no custom command text.
+Dynamic recent lists continue sending native Agent slot actions without requiring Custom assignments. Only actual transport submission invalidates the target; diagnostic capture, queueing alone, or failed submission does not establish a desktop switch. The latched Agent NN identifies the submitted slot. Title not synced and unknown settings reflect the missing reliable target, even if the old explicit chat bridge remains fresh.
+
+The companion validates a successfully read `codex-micro-layout` against the desktop v1 schema. An invalid layout, such as `encoder: {}`, falls back to the complete native default layout, matching the desktop app without mixing in an older layout from another source. Valid custom mappings and explicit `null` values retain their meaning. Unreadable or unparseable configuration sources remain unknown; they do not imply defaults. Diagnostic summaries expose `layout_source` and `layout_invalid` without changing the wire format of `HOST_CONFIG`.
+
+The optional `HOST_CONFIG` field `joystick_up` accepts only `unknown` or `plan`. After normalization, the companion sends `plan` only when Up maps to `composer.togglePlanMode`; an omitted `analogStick` uses the verified desktop default. Other Up mappings, unavailable configuration sources, and older packets without the field resolve to `unknown`. This reports a saved mapping, not the live action target or proof of execution, and exposes no custom command text.
 
 Normal watch mode checks for changes once per second and sends a heartbeat approximately every two seconds. Each message has its own 1.5-second acknowledgement budget, and partial acknowledgement lines survive read timeouts. Metadata becomes stale after 7.5 seconds without a valid update, when the active connection is lost, or when it changes.
 
@@ -138,7 +154,7 @@ Version 0.11.0 adds English and Chinese UI labels through `UiLocale`. A full fac
 
 Localization applies to console, settings, and game labels, using the existing antialiased fonts and visible-ink metrics. English labels select an appropriate size for the available width. Chat titles retain their original text. UI language changes do not translate native protocol enums or machine-readable diagnostic fields, so host integration and existing protocol assertions remain independent of the display language.
 
-## Fonts and two-line scrolling
+## Fonts and title scrolling
 
 Static labels and dynamic titles use a pinned Noto Sans SC Medium source. Static faces contain native 16/20/24/26/28/32/40px antialiased subsets. Dynamic titles use a separate 24px BMP face covering 30,445 glyphs. Unsupported characters are replaced individually, rather than making the entire line fall back to an older font.
 
@@ -150,13 +166,13 @@ The `T5VLW4` asset format retains VLW metric tables and stores bitmaps as 4-bit 
 .venv/bin/python tools/build_title_font.py --check
 ```
 
-Each title viewport is 50px high, with two 25px rows. English wrapping prefers complete words. Chinese wrapping permits character boundaries while avoiding unsuitable punctuation at line starts and ends where possible. Short titles are centered; titles occupying at most two rows remain static without added ellipses.
+In 0.13.1, the central title uses the full available width without wrapping. Titles that fit remain static; longer titles scroll horizontally. Agent key titles retain 50px viewports with two 25px rows. English wrapping prefers complete words. Chinese wrapping permits character boundaries while avoiding unsuitable punctuation at line starts and ends where possible. Short titles are centered; titles occupying at most two rows remain static without added ellipses.
 
-Longer titles dwell for 2.2 seconds, then move upward by one row over one second. Appending the first two rows to the strip makes the loop continuous. Any touch pauses the clock. Release preserves a one-second reading pause before motion resumes. Settings and games pause title clocks; returning does not skip content based on elapsed wall time.
+Agent key titles beyond two rows dwell for 2.2 seconds, then move upward by one row over one second. Appending the first two rows to the strip makes the loop continuous. Any touch pauses scrolling clocks. Release preserves a one-second reading pause before motion resumes. Settings and games pause title clocks; returning does not skip content based on elapsed wall time.
 
 Text is rasterized into a cached alpha strip only when its content, font, or width changes. Scrolling restores a clean background and composites that strip without redrawing glyphs or allocating memory. Theme and press-background changes recapture the background while retaining scroll position. Titles and neon borders share an idle-update budget: at most one idle region is refreshed per frame, while input-related redraws take priority.
 
-`TITLE_SCROLL_TEST` works only inside `INPUT_TEST` and supplies a repeatable virtual absolute clock. Ending capture clears it automatically. Production scrolling uses the real clock. `FX FREEZE` holds ordinary titles at their first two rows for pixel comparison.
+`TITLE_SCROLL_TEST` works only inside `INPUT_TEST` and supplies a repeatable virtual absolute clock. Ending capture clears it automatically. Production scrolling uses the real clock. `FX FREEZE` holds titles at their starting position, showing the first two rows on Agent keys for pixel comparison.
 
 ## Materials, neon, and partial updates
 
@@ -199,8 +215,8 @@ With a Tab5 running this firmware, run the relevant device checks as needed:
 .venv/bin/python tools/verify_audio_performance.py
 .venv/bin/python tools/verify_neon.py
 .venv/bin/python tools/verify_orientation.py
-.venv/bin/python tools/verify_transition_performance.py --firmware 0.12.0
-.venv/bin/python tools/verify_screenshot_stream.py --firmware 0.12.0
+.venv/bin/python tools/verify_transition_performance.py --firmware 0.13.1
+.venv/bin/python tools/verify_screenshot_stream.py --firmware 0.13.1
 ```
 
 These touch-regression tools use diagnostic capture to prevent synthetic touches from triggering computer actions. Cleanup exits capture, clears previews, and restores preferences. Orientation validation may require manually repositioning the device.
@@ -234,6 +250,24 @@ Common CDC commands:
 | `BOOTLOADER` / `RESTART` | Enter ROM download mode or restart |
 
 During screenshot transfer, the companion cannot acquire the serial lock, so metadata observed after transfer may exceed its TTL. This does not change the image copied when `SCREEN` began. To validate live state, save a fresh `STATUS` before the screenshot; release the lock after transfer and allow the companion to refresh.
+
+### 0.13.1 release validation results
+
+The following checks are complete. The release firmware uses the same image flashed during these checks.
+
+| Check | Completed result and scope |
+| --- | --- |
+| Full host regression | `python -m unittest discover -s tests -v`: **413/413 passed in 84.484 seconds** |
+| Release build and flash | PlatformIO build succeeded in 156.59 seconds. App-only flashing reconnected to the same P4 Tab5 reporting exactly 0.13.1 |
+| Hardware control capture | 13 balanced key presses and four inner arrows plus neutral passed. Maximum input intervals: dial 14.599ms, joystick 12.545ms. Computer native-input count stayed 0→0, confirming capture isolation rather than execution |
+| Input policy | 13 cases passed, including native down/up for 650ms Voice/encoder-center holds and slide-out cancellation; 10 captured events and successful cleanup |
+| Agent latch contract | Six host contract/queue-submission groups plus code review cover complete successful submission, failed/partial submission, diagnostic capture, and repeated old-heartbeat filtering. Real desktop Agent switching or focus was not rechecked in this round |
+| Partial pixel restoration | Zero framebuffer pixel differences between dirty/full rendering; cleanup passed |
+| Central title pixels | An isolated synthetic long title moved horizontally by 20px with zero aligned-ink mismatches and zero changes outside its viewport. Replacing it with a short title produced zero dirty/full differences. The actual tracked title stays on one line in the 348px viewport with `max_offset:0` |
+| Theme surfaces and screenshots | Seven sampled material areas in each theme contained one color matching the expected value. Normal-running captures show English UI with the actual project title/bridge state; no Agent action was submitted to manufacture a screenshot |
+| Bundle validation | `tools/package_release.py` succeeded. Standalone `python -S flash.py --check` verified the ESP32-P4 0.13.1 image and 30,445 glyphs. Standard-library offline validation passed again after separately extracting the ZIP. Screenshot links in both flashing guides resolve to existing assets inside the bundle |
+
+Historical pass records do not replace current checks. These touch cases use diagnostic capture, suppress native computer actions, and do not establish desktop execution. Short input-interval samples are not universal performance limits or computer-side latency measurements.
 
 ### 0.12.0 release validation results
 
@@ -311,6 +345,8 @@ These are short device-side samples, not universal performance limits or compute
 
 | Version | Changes |
 | --- | --- |
+| 0.13.1 | Equal-width panels, single-line horizontal central titles, inner joystick arrows, release confirmation, separate link/sync states, and dynamic Agent target invalidation; hardware UI and bundle validation passed within the scope recorded above |
+| 0.13.0 | Standard USB microphone, meters/mute/gain and retained preferences; native USB/Bluetooth controls preserved, Bluetooth microphone unsupported |
 | 0.12.0 | Native USB/BLE protocol, PIN pairing and reconnection, and encrypted metadata GATT; Fast/Plan desktop execution, metadata stress, and automatic switching have case-specific evidence in the validation table |
 | 0.11.1 | Separate tracked settings and native targets, explicit connection evidence, nonblocking HID and release recovery, cooperative input during drawing, pause on game exit, permission-patch resynchronization, and strict flashing verification |
 | 0.11.0 | Runtime English/Chinese interface, bilingual documentation, and a prebuilt firmware/font download bundle |

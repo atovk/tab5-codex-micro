@@ -11,6 +11,7 @@ inline constexpr uint32_t DwellMs = 2200;
 inline constexpr uint32_t MoveMs = 1000;
 inline constexpr uint32_t StepMs = DwellMs + MoveMs;
 inline constexpr uint32_t ResumeHoldMs = 1000;
+inline constexpr uint32_t HorizontalPixelMs = 25;  // 40 pixels per second.
 
 inline uint32_t cycleMs(uint8_t lines) {
   return lines <= 2 ? 0 : uint32_t(lines) * StepMs;
@@ -25,6 +26,23 @@ inline uint16_t offsetAt(uint32_t elapsed, uint8_t lines) {
   const uint32_t movement = phase < DwellMs ? 0
       : (phase - DwellMs) * LineHeight / MoveMs;
   return uint16_t(row * LineHeight + movement);
+}
+
+// A single line stays still when it fits. Overflow travels to its final pixel
+// and back, with a reading pause at both ends and no discontinuous wrap.
+inline uint32_t horizontalCycleMs(uint16_t overflow) {
+  return overflow ? 2 * (DwellMs + uint32_t(overflow) * HorizontalPixelMs) : 0;
+}
+
+inline uint16_t horizontalOffsetAt(uint32_t elapsed, uint16_t overflow) {
+  if (!overflow) return 0;
+  const uint32_t travel = uint32_t(overflow) * HorizontalPixelMs;
+  const uint32_t leg = DwellMs + travel;
+  const uint32_t phase = elapsed % (2 * leg);
+  const bool returning = phase >= leg;
+  const uint32_t within = returning ? phase - leg : phase;
+  const uint16_t moved = within < DwellMs ? 0 : uint16_t((within - DwellMs) / HorizontalPixelMs);
+  return returning ? uint16_t(overflow - moved) : moved;
 }
 
 class Clock {

@@ -1,4 +1,5 @@
 #include "micro_controls.h"
+#include "control_layout.h"
 
 #include <math.h>
 
@@ -10,9 +11,9 @@ constexpr float STEP = TAU / 24;
 // ESP32 atan2f and repeated float subtraction can leave a complete revolution
 // a few ULPs below its final detent. This tolerance is far below touch noise.
 constexpr float ANGLE_EPSILON = .00001f;
-constexpr int DIAL_X = 244, DIAL_Y = 352;
-constexpr int STICK_X = 802, STICK_Y = 352;
-constexpr float STICK_RADIUS = 92;
+constexpr int DIAL_X = ControlLayout::DialX, DIAL_Y = ControlLayout::DialY;
+constexpr int STICK_X = ControlLayout::StickX, STICK_Y = ControlLayout::StickY;
+constexpr float STICK_RADIUS = ControlLayout::StickRadius;
 constexpr int QUEUE_SIZE = 32;
 
 struct Button { int x, y, w, h; const char* key; int held; };
@@ -25,10 +26,12 @@ constexpr Button buttons[] = {
   {676,542,170,150,"ACT10",10}, {846,542,170,150,"ACT11",13},
   {1028,542,224,150,"ACT12",11},
 };
-enum class Capture { None, Blocked, Key, Ring, Center, Stick };
+enum class Capture { None, Blocked, Key, DeferredKey, Ring, Center, Stick };
 Capture capture = Capture::None;
 bool finger = false;
 const char* capturedKey = nullptr;
+const Button* capturedButton = nullptr;
+uint8_t releaseActionMask = 0;
 Visual state;
 MicroUI::Event queue[QUEUE_SIZE];
 unsigned readAt = 0, queued = 0;
@@ -57,15 +60,14 @@ void stick(float x, float y, uint32_t now, bool force = false) {
   const bool neutral = d == 0;
   const bool crossedNeutral = neutral != (sentStickX == 0 && sentStickY == 0);
   const bool moved = radius(x-sentStickX,y-sentStickY) >= .025f;
-  const float oldD = radius(sentStickX,sentStickY);
-  const bool crossedThreshold = (oldD < .5f) != (d < .5f);
+  const auto direction = stickDirection(x,y);
+  const auto oldDirection = stickDirection(sentStickX,sentStickY);
+  const bool crossedThreshold = (direction == StickDirection::Neutral)
+      != (oldDirection == StickDirection::Neutral);
   float a = atan2f(y,x) / TAU;
   if (a < 0) a += 1;
-  float oldA = atan2f(sentStickY,sentStickX) / TAU;
-  if (oldA < 0) oldA += 1;
-  const int sector = int(floorf((a + .125f) * 4)) % 4;
-  const int oldSector = int(floorf((oldA + .125f) * 4)) % 4;
-  const bool changedDirection = d >= .5f && oldD >= .5f && sector != oldSector;
+  const bool changedDirection = direction != StickDirection::Neutral
+      && oldDirection != StickDirection::Neutral && direction != oldDirection;
   if (force || crossedNeutral || crossedThreshold || changedDirection
       || (moved && uint32_t(now-stickAt) >= 20)) {
     MicroUI::Event event;
@@ -77,10 +79,24 @@ void stick(float x, float y, uint32_t now, bool force = false) {
     state.stickX = x; state.stickY = y; ++state.revision;
   }
 }
-void release() {
+bool inside(const Button& button, int x, int y) {
+  return x >= button.x && x < button.x + button.w
+      && y >= button.y && y < button.y + button.h;
+}
+bool releaseAction(const Button& button) {
+  if (button.key[0] != 'A' || button.key[1] != 'C' || button.key[2] != 'T') return false;
+  const int index = (button.key[3] - '0') * 10 + button.key[4] - '0' - 6;
+  return index >= 0 && index < 7 && (releaseActionMask & (1 << index));
+}
+void release(bool submitDeferred = false) {
   if (capture == Capture::Key || capture == Capture::Center) key(capturedKey,0);
+  else if (capture == Capture::DeferredKey && submitDeferred && queued <= QUEUE_SIZE - 2) {
+    // A single-shot action still uses the native balanced key pair. Reserve
+    // both queue slots so a partial pair can never leave a key held down.
+    key(capturedKey,1); key(capturedKey,0);
+  }
   else if (capture == Capture::Stick) stick(0,0,0,true);
-  capture = Capture::None; capturedKey = nullptr;
+  capture = Capture::None; capturedKey = nullptr; capturedButton = nullptr;
   state.held = -1; state.dialPressed = false; state.dialTurning = false;
   state.stickActive = false; state.pressStarted = 0;
   angleValid = false; remainder = 0; ++state.revision;
@@ -113,21 +129,45 @@ void turn(int16_t x, int16_t y) {
 }
 }  // namespace
 
+StickDirection stickDirection(float x, float y) {
+  if (radius(x,y) < StickActivationThreshold) return StickDirection::Neutral;
+  float angle = atan2f(y,x) / TAU;
+  if (angle < 0) angle += 1;
+  return static_cast<StickDirection>(int(floorf((angle + .125f) * 4)) % 4);
+}
+
 void reset() {
-  capture = Capture::None; finger = false; capturedKey = nullptr;
+  capture = Capture::None; finger = false; capturedKey = nullptr; capturedButton = nullptr;
+  releaseActionMask = 0;
   state = Visual{}; readAt = queued = 0;
   previousAngle = remainder = 0; angleValid = false;
   stickAt = 0; sentStickX = sentStickY = 0;
 }
 
+void cancelDeferredAction() {
+  if (capture != Capture::DeferredKey) return;
+  // Keep this finger blocked until it lifts, including after it reenters.
+  capture = Capture::Blocked; capturedKey = nullptr; capturedButton = nullptr;
+  state.held = -1; ++state.revision;
+}
+
+void setReleaseActionMask(uint8_t mask) {
+  mask &= 0x7f;
+  if (releaseActionMask != mask) cancelDeferredAction();
+  releaseActionMask = mask;
+}
+
 void sample(int16_t x, int16_t y, bool pressed, uint32_t now) {
   if (!pressed) {
-    if (finger) release();
+    // M5Unified retains the last touch coordinates on release. A synthetic
+    // (0,0) release intentionally cancels a pending click during handoff/QA.
+    if (finger) release(capturedButton && inside(*capturedButton,x,y));
     finger = false;
     return;
   }
   if (finger) {
-    if (capture == Capture::Ring) turn(x,y);
+    if (capture == Capture::DeferredKey && !inside(*capturedButton,x,y)) cancelDeferredAction();
+    else if (capture == Capture::Ring) turn(x,y);
     else if (capture == Capture::Stick)
       stick(float(x-STICK_X)/STICK_RADIUS,float(y-STICK_Y)/STICK_RADIUS,now);
     return;
@@ -135,9 +175,12 @@ void sample(int16_t x, int16_t y, bool pressed, uint32_t now) {
   finger = true;
   capture = Capture::Blocked;
   for (const auto& b : buttons) {
-    if (x >= b.x && x < b.x+b.w && y >= b.y && y < b.y+b.h) {
-      capture = Capture::Key; capturedKey = b.key; state.held = b.held;
-      ++state.revision; key(capturedKey,1); return;
+    if (inside(b,x,y)) {
+      capture = releaseAction(b) ? Capture::DeferredKey : Capture::Key;
+      capturedKey = b.key; capturedButton = &b; state.held = b.held;
+      ++state.revision;
+      if (capture == Capture::Key) key(capturedKey,1);
+      return;
     }
   }
   const float dialR = radius(x-DIAL_X,y-DIAL_Y);

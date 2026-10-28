@@ -378,6 +378,7 @@ void serviceInputs() {
   sampledAt=now;
   M5.update();
   MicroLink::poll();
+  if (uiReady) MicroUI::syncInputPolicy(MicroLink::state());
   const uint32_t generation=MicroLink::transportGeneration();
   if (uiReady && inputGenerationKnown && generation!=inputGeneration) {
     // The old link owns its release/neutral cleanup. Do not migrate the
@@ -675,6 +676,7 @@ void debugCommand() {
             && x>=0 && x<1280 && y>=0 && y<720 && (pressed==0 || pressed==1)) {
           testX=x; testY=y; testPressed=pressed;
           inputTestAt=millis();
+          MicroUI::syncInputPolicy(MicroLink::state());
           sendInput(MicroUI::touch(testX,testY,testPressed)); drainInputs();
           DebugSerial.println("INPUT_TOUCH_OK");
         } else DebugSerial.println("INPUT_TOUCH_ERROR");
@@ -838,7 +840,7 @@ void loop() {
     rendered=millis();
     const auto captureBefore=frameCapture.active() ? frameCaptureContext() : DeferredFrameCapture::Context{};
     uint32_t started=micros();
-    if (MicroUI::render(MicroLink::state())) MicroLink::recordFrame(micros()-started);
+    if (MicroUI::render(MicroLink::state(), MicroLink::capturingInputs())) MicroLink::recordFrame(micros()-started);
     serviceFrameCapture(captureBefore);
   }
   if (frameCapture.state()!=DeferredFrameCapture::State::Idle)

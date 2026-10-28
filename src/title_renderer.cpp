@@ -1,6 +1,7 @@
 #include "title_renderer.h"
 
 #include "title_layout.h"
+#include "title_scroll.h"
 #include "ui_text.h"
 #include "render_service.h"
 #include <esp_heap_caps.h>
@@ -55,18 +56,18 @@ void Cache::release() {
   std::free(mask_); std::free(background_);
   mask_=nullptr; background_=nullptr;
   canvas_=nullptr; maskBytes_=0;
-  ready_=painted_=pendingClip_=false; lineCount_=0; offset_=0;
+  ready_=painted_=pendingClip_=false; lineCount_=0; maskWidth_=0; offset_=0;
 }
 
-bool Cache::sourceChanged(const char* source,const lgfx::IFont* font,uint16_t width) const {
-  return !attempted_ || font_!=font || width_!=width
+bool Cache::sourceChanged(const char* source,const lgfx::IFont* font,uint16_t width,bool singleLine) const {
+  return !attempted_ || font_!=font || width_!=width || singleLine_!=singleLine
       || strncmp(source_,source ? source : "",sizeof(source_)-1)!=0;
 }
 
-bool Cache::prepare(const char* source,const lgfx::IFont* font,uint16_t width) {
-  if (!sourceChanged(source,font,width)) return ready_;
+bool Cache::prepare(const char* source,const lgfx::IFont* font,uint16_t width,bool singleLine) {
+  if (!sourceChanged(source,font,width,singleLine)) return ready_;
   release();
-  attempted_=true; font_=font; width_=width; ++generation_;
+  attempted_=true; font_=font; width_=width; singleLine_=singleLine; ++generation_;
   strncpy(source_,source ? source : "",sizeof(source_)-1);
   source_[sizeof(source_)-1]=0;
   if (!font || !width || width>MaxWidth) return false;
@@ -75,11 +76,19 @@ bool Cache::prepare(const char* source,const lgfx::IFont* font,uint16_t width) {
   normalize(normalized,source_,font);
   if (!*normalized) return false;
   TitleLayout::Layout layout;
-  if (!TitleLayout::wrap(layout,normalized,width,measure,const_cast<lgfx::IFont*>(font))
+  uint16_t rasterWidth=width;
+  if (singleLine) {
+    const int32_t textWidth=measure(normalized,const_cast<lgfx::IFont*>(font));
+    // Bounded by the 191-byte source and native title font in normal use.
+    // Reject pathological external font metrics before allocating a raster.
+    if (textWidth<=0 || textWidth>8192) return false;
+    rasterWidth=uint16_t(std::max<int32_t>(width,textWidth));
+    layout.count=1;
+  } else if (!TitleLayout::wrap(layout,normalized,width,measure,const_cast<lgfx::IFont*>(font))
       || layout.overflow || !layout.count) return false;
   const uint16_t rows=layout.count>2 ? uint16_t(layout.count+2) : 2;
   const uint16_t height=rows*RowHeight;
-  const size_t maskSize=size_t(width)*height;
+  const size_t maskSize=size_t(rasterWidth)*height;
   auto* mask=static_cast<uint8_t*>(heap_caps_malloc(maskSize,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
   auto* background=static_cast<uint16_t*>(heap_caps_malloc(size_t(width)*ViewHeight*2,
       MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
@@ -88,7 +97,7 @@ bool Cache::prepare(const char* source,const lgfx::IFont* font,uint16_t width) {
   M5Canvas raster;
   raster.setColorDepth(16);
   raster.setPsram(true);
-  if (!raster.createSprite(width,height)) {
+  if (!raster.createSprite(rasterWidth,height)) {
     std::free(mask); std::free(background); return false;
   }
   raster.fillScreen(0);
@@ -96,12 +105,13 @@ bool Cache::prepare(const char* source,const lgfx::IFont* font,uint16_t width) {
   const uint16_t drawRows=layout.count>2 ? rows : layout.count;
   for (uint16_t row=0;row<drawRows;++row) {
     const uint16_t index=row%layout.count;
-    if (!TitleLayout::copyLine(layout,index,line,sizeof(line))) {
+    if (singleLine) memcpy(line,normalized,sizeof(line));
+    else if (!TitleLayout::copyLine(layout,index,line,sizeof(line))) {
       raster.deleteSprite(); std::free(mask); std::free(background); return false;
     }
     const int centerY=layout.count==1 ? ViewHeight/2 : int(row)*RowHeight+RowHeight/2;
     if (layout.count>1) raster.setClipRect(0,int(row)*RowHeight,width,RowHeight);
-    UiText::drawCentered(raster,line,width/2,centerY,font,0xFFFFFF);
+    UiText::drawCentered(raster,line,rasterWidth/2,centerY,font,0xFFFFFF);
   }
   raster.clearClipRect();
   const auto* pixels=static_cast<const uint16_t*>(raster.getBuffer());
@@ -111,13 +121,27 @@ bool Cache::prepare(const char* source,const lgfx::IFont* font,uint16_t width) {
     mask[index]=uint8_t((green*255+31)/63);
   }
   raster.deleteSprite();
-  mask_=mask; background_=background; maskBytes_=maskSize;
+  mask_=mask; background_=background; maskBytes_=maskSize; maskWidth_=rasterWidth;
   lineCount_=layout.count; ready_=true;
   return true;
 }
 
 uint16_t Cache::normalizedOffset(uint16_t value) const {
+  if (singleLine_) return std::min<uint16_t>(value,overflowWidth());
   return lineCount_>2 ? uint16_t(value%(uint16_t(lineCount_)*RowHeight)) : 0;
+}
+
+uint16_t Cache::offsetAt(uint32_t elapsed) const {
+  return singleLine_ ? TitleScroll::horizontalOffsetAt(elapsed,overflowWidth())
+      : TitleScroll::offsetAt(elapsed,lineCount_);
+}
+
+uint16_t Cache::maxOffset() const {
+  return singleLine_ ? overflowWidth() : lineCount_>2 ? uint16_t(lineCount_*RowHeight-1) : 0;
+}
+
+uint32_t Cache::cycleMs() const {
+  return singleLine_ ? TitleScroll::horizontalCycleMs(overflowWidth()) : TitleScroll::cycleMs(lineCount_);
 }
 
 bool Cache::paint(M5Canvas& canvas,int16_t x,int16_t y,uint32_t rgb,uint16_t offset) {
@@ -161,7 +185,9 @@ bool Cache::compose(M5Canvas& canvas,uint16_t offset) {
   for (int y=top;y<bottom;++y) {
     if ((y & 7) == 0) RenderService::checkpoint();
     const size_t local=size_t(y-y_)*width_+left-x_;
-    const auto* alpha=mask_+size_t(offset)*width_+local;
+    const auto* alpha=singleLine_
+        ? mask_+size_t(y-y_)*maskWidth_+left-x_+offset
+        : mask_+size_t(offset)*width_+local;
     const auto* background=background_+local;
     for (size_t col=0;col<count;++col) {
       const unsigned coverage=alpha[col];

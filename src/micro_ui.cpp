@@ -1,6 +1,7 @@
 #include "micro_ui.h"
 #include "micro_games.h"
 #include "micro_controls.h"
+#include "control_layout.h"
 #include "material_gradient.h"
 #include "ui_font.h"
 #include "title_font.h"
@@ -60,16 +61,18 @@ uint8_t headerHeld = 0;
 uint8_t previousHeaderHeld = 0;
 Preferences preferences;
 bool preferencesReady = false;
+bool dialHintSeen = false, renderedDialHint = false, previousDialHint = false;
+uint32_t dialHintElapsed = 0, dialHintLastAt = 0;
+DeferredSetting<bool> dialHintPersistence(false);
+HostFeedback::Action inputActionMappings[7] = {};
+Transport inputActionTransport = Transport::None;
 
-constexpr int DIAL_X = 126, DIAL_Y = 236, DIAL_W = 236, DIAL_H = 236;
-constexpr int STICK_X = 680, STICK_Y = 238, STICK_W = 244, STICK_H = 228;
-constexpr int CENTER_X = 208, CENTER_Y = 326, CENTER_W = 72, CENTER_H = 64;
-constexpr int COUNTER_X = 376, COUNTER_Y = 310, COUNTER_W = 120, COUNTER_H = 49;
-constexpr int FEEDBACK_X = 988, FEEDBACK_Y = 274, FEEDBACK_W = 238, FEEDBACK_H = 84;
+constexpr int DIAL_X = ControlLayout::DialX - 118, DIAL_Y = 236, DIAL_W = 236, DIAL_H = 236;
+constexpr int STICK_X = ControlLayout::StickX - 122, STICK_Y = 238, STICK_W = 244, STICK_H = 228;
+constexpr int CENTER_X = ControlLayout::DialX - 36, CENTER_Y = 326, CENTER_W = 72, CENTER_H = 64;
 uint16_t* dialBackdrops[2] = {};
 uint16_t* stickBackdrop = nullptr;
 uint16_t* longPressCenter = nullptr;
-uint16_t* counterBackdrop = nullptr;
 bool backdropsReady = false;
 Theme backdropTheme = Theme::Light;
 uint32_t backdropLocale = 0;
@@ -193,21 +196,6 @@ void centerFitted(const char* value, int x, int y, int width, uint32_t color,
   center(value, x, y, color, font);
 }
 
-const char* localizedSignalLabel(HostFeedback::Signal value) {
-  if (!UiLocale::english()) return HostFeedback::signalLabel(value);
-  using S = HostFeedback::Signal;
-  switch (value) {
-    case S::Offline: return "Host offline";
-    case S::Unknown: return "Waiting for lights";
-    case S::Off: return "Ambient off";
-    case S::Recording: return "Dictation recording";
-    case S::Processing: return "Dictation processing";
-    case S::DialMenu: return "Dial selection";
-    case S::WorkingOrSelection: return "Working / selected";
-    default: return "Host feedback";
-  }
-}
-
 const char* agentLabel(AgentStatus::Kind value) {
   if (!UiLocale::english()) return AgentStatus::label(value);
   using K = AgentStatus::Kind;
@@ -299,13 +287,13 @@ uint32_t titleNow(int slot) { return manualTitle(slot) ? titleTestNow : titleRen
 uint16_t titleOffset(int slot) {
   const auto& panel = titles[slot];
   if (!panel.visible || (effectsFrozen && !manualTitle(slot))) return 0;
-  return TitleScroll::offsetAt(panel.clock.elapsed(), panel.cache.lineCount());
+  return panel.cache.offsetAt(panel.clock.elapsed());
 }
 
 bool paintTitle(int slot, const char* source, int x, int y, uint16_t width,
                 uint32_t rgb, bool available) {
   auto& panel = titles[slot];
-  panel.cache.prepare(source, UiTitleFont::font(), width);
+  panel.cache.prepare(source, UiTitleFont::font(), width, slot == 6);
   if (panel.generation != panel.cache.generation()) {
     panel.generation = panel.cache.generation();
     panel.clock.reset(titleNow(slot));
@@ -325,7 +313,7 @@ void advanceTitleClocks(const InputState& snapshot, uint32_t now) {
     panel.clock.advance(titleNow(i), paused);
     // Snapshot effectsFrozen is applied below before a structural repaint.
     panel.desired = !panel.visible || (snapshot.effectsFrozen && !manualTitle(i)) ? 0
-        : TitleScroll::offsetAt(panel.clock.elapsed(), panel.cache.lineCount());
+        : panel.cache.offsetAt(panel.clock.elapsed());
   }
 }
 
@@ -429,17 +417,18 @@ bool restoreBackdrop(const uint16_t* source, int x, int y, int w, int h) {
 }
 
 void drawDialCenter(bool pressed, bool longPress) {
-  constexpr int cx = 244, cy = 352;
+  constexpr int cx = ControlLayout::DialX, cy = ControlLayout::DialY;
   metalFace(cx, cy + (pressed ? 2 : 0), 48,
       pressed ? material->keyPressed : material->keyTop, 1.5f);
   MaterialGradient::strokeCircle(canvas, cx, cy + (pressed ? 2 : 0), 48, .8f,
       mix(material->keyTop, material->edge, pressed ? .50f : .22f));
-  center(pressed ? longPress ? tr("长按", "Long") : tr("按住", "Held") : tr("按下", "Press"),
-         cx, cy + (pressed ? 2 : 0), INK, UiFont::sans28());
+  const uint32_t indicator = longPress ? (dark() ? 0x9DD6BB : 0x3F8065)
+      : pressed ? material->accent : MUTED;
+  circleGradient(cx, cy + (pressed ? 2 : 0), 2, indicator, indicator);
 }
 
 void drawDialMaterial(bool pressed, bool longPress = false) {
-  constexpr int cx = 244, cy = 352;
+  constexpr int cx = ControlLayout::DialX, cy = ControlLayout::DialY;
   paintTray(DIAL_X, DIAL_Y, DIAL_W, DIAL_H);
   const MaterialGradient::OpaqueCover face(cx - 106, cy - 106, 212, 212, 106);
   MaterialGradient::shadowCircle(canvas, cx, cy + 4, 106, 7, 100, material->deepShadow, &face);
@@ -458,25 +447,23 @@ void drawDialMaterial(bool pressed, bool longPress = false) {
   drawDialCenter(pressed, longPress);
 }
 
-void drawCounterMaterial() {
-  paintTray(COUNTER_X, COUNTER_Y, COUNTER_W, COUNTER_H);
-}
-
 void drawStickMaterial() {
-  constexpr int cx = 802, cy = 352;
+  constexpr int cx = ControlLayout::StickX, cy = ControlLayout::StickY;
+  constexpr int r = ControlLayout::FaceRadius, arrow = ControlLayout::StickArrowRadius;
   paintTray(STICK_X, STICK_Y, STICK_W, STICK_H);
-  metalFace(cx, cy, 93, material->recess, 2.5f, true);
-  MaterialGradient::strokeCircle(canvas, cx, cy, 93, .9f,
-      mix(material->recess, material->highlight, .40f));
-  MaterialGradient::strokeCircle(canvas, cx, cy, 62, .7f,
+  const uint32_t well = mix(material->recess, material->metalTop, dark() ? .28f : .04f);
+  metalFace(cx, cy, r, well, 2.5f, true);
+  MaterialGradient::strokeCircle(canvas, cx, cy, r, dark() ? 1.2f : 1.f,
+      mix(well, material->highlight, dark() ? .68f : .48f));
+  MaterialGradient::strokeCircle(canvas, cx, cy, 70, .7f,
       mix(material->recess, material->highlight, .13f));
   uint32_t axis = mix(material->recess, material->highlight, .16f);
-  MaterialGradient::line(canvas, cx - 81, cy, cx + 81, cy, .7f, axis);
-  MaterialGradient::line(canvas, cx, cy - 81, cx, cy + 81, .7f, axis);
-  UiIcons::draw(canvas, UiIcons::Icon::ChevronUp, cx, 247, 16, MUTED);
-  UiIcons::draw(canvas, UiIcons::Icon::ChevronDown, cx, 457, 16, MUTED);
-  UiIcons::draw(canvas, UiIcons::Icon::ChevronLeft, 697, cy, 16, MUTED);
-  UiIcons::draw(canvas, UiIcons::Icon::ChevronRight, 907, cy, 16, MUTED);
+  MaterialGradient::line(canvas, cx - 70, cy, cx + 70, cy, .7f, axis);
+  MaterialGradient::line(canvas, cx, cy - 70, cx, cy + 70, .7f, axis);
+  UiIcons::draw(canvas, UiIcons::Icon::ChevronUp, cx, cy - arrow, 16, MUTED);
+  UiIcons::draw(canvas, UiIcons::Icon::ChevronDown, cx, cy + arrow, 16, MUTED);
+  UiIcons::draw(canvas, UiIcons::Icon::ChevronLeft, cx - arrow, cy, 16, MUTED);
+  UiIcons::draw(canvas, UiIcons::Icon::ChevronRight, cx + arrow, cy, 16, MUTED);
 }
 
 void rebuildBackdrops() {
@@ -490,8 +477,6 @@ void rebuildBackdrops() {
   saveBackdrop(dialBackdrops[1], DIAL_X, DIAL_Y, DIAL_W, DIAL_H);
   drawDialCenter(true, true);
   saveBackdrop(longPressCenter, CENTER_X, CENTER_Y, CENTER_W, CENTER_H);
-  drawCounterMaterial();
-  saveBackdrop(counterBackdrop, COUNTER_X, COUNTER_Y, COUNTER_W, COUNTER_H);
   drawStickMaterial();
   saveBackdrop(stickBackdrop, STICK_X, STICK_Y, STICK_W, STICK_H);
   backdropsReady = true;
@@ -602,6 +587,12 @@ const char* activeTransportLabel(const State& state) {
   if (state.activeTransport == Transport::Usb) return tr("USB 有线", "USB cable");
   if (state.activeTransport == Transport::Bluetooth) return tr("蓝牙无线", "Bluetooth");
   return tr("暂无连接", "No active connection");
+}
+
+const char* trackedChatSyncLabel(const State& state) {
+  if (state.selectedAgent >= 0) return tr("聊天标题未同步", "Agent title: not synced");
+  return state.hostChat.fresh ? tr("指定聊天已同步", "Tracked chat: synced")
+      : tr("指定聊天未同步", "Tracked chat: not synced");
 }
 
 void bluetoothPasskey(const State& state, char* destination, size_t capacity) {
@@ -771,21 +762,28 @@ void drawBluetoothStatus(const State& state) {
   MaterialGradient::solidRoundRect565(canvas,x,y,w,h,24,surface565(material->trayTop));
   MaterialGradient::strokeRoundRect(canvas,x,y,w,h,24,.8f,
       mix(material->trayTop,material->edge,.4f));
-  text(tr("当前输入通道", "Active input"),76,238,MUTED,UiFont::sans20());
-  text(activeTransportLabel(state),76,278,INK,UiFont::sans32());
-  text(bluetoothStatus(state),76,330,state.bleReady ? material->accent : INK,UiFont::sans24());
+  text(tr("输入连接", "Input link"),76,238,MUTED,UiFont::sans20());
+  text(activeTransportLabel(state),76,274,INK,UiFont::sans32());
+  text(trackedChatSyncLabel(state),76,328,state.hostChat.fresh ? INK : MUTED,UiFont::sans20());
+  text(tr("桌面执行结果：未知", "Desktop execution: unknown"),76,366,MUTED,UiFont::sans20());
   char name[80];
   snprintf(name,sizeof(name),"%s%s",tr("设备名：", "Device: "),
       state.bleDeviceName[0] ? state.bleDeviceName : "Tab5 Codex Micro");
   const auto* nameFont=UiText::bounds(UiFont::sans20(),name).w<=704 ? UiFont::sans20() : UiFont::sans16();
-  canvas.setClipRect(76,370,704,34);
-  text(name,76,374,MUTED,nameFont);
+  canvas.setClipRect(76,398,704,28);
+  text(name,76,398,MUTED,nameFont);
   canvas.clearClipRect();
-  center(tr("配对验证码", "Pairing code"),1010,250,MUTED,UiFont::sans20());
-  char pin[16];
-  bluetoothPasskey(state,pin,sizeof(pin));
-  center(pin,1010,312,INK,UiFont::sans40());
-  center(tr("按电脑提示完成配对", "Follow the computer prompt"),1010,374,MUTED,UiFont::sans16());
+  centerFitted(bluetoothStatus(state),1010,252,360,INK,UiFont::sans24());
+  if (state.blePairing) {
+    center(tr("配对验证码", "Pairing code"),1010,298,MUTED,UiFont::sans16());
+    char pin[16];
+    bluetoothPasskey(state,pin,sizeof(pin));
+    center(pin,1010,344,INK,UiFont::sans40());
+    center(tr("按电脑提示完成配对", "Follow the computer prompt"),1010,394,MUTED,UiFont::sans16());
+  } else {
+    center(state.bleBonded ? tr("配对已保存", "Pairing saved") : tr("尚未保存配对", "No saved pairing"),
+        1010,322,MUTED,UiFont::sans20());
+  }
   if (state.bleError[0]) {
     canvas.setClipRect(76,416,1128,34);
     centerFitted(state.bleError,640,434,1120,MUTED,UiFont::sans16());
@@ -833,7 +831,8 @@ void drawBluetoothSettings(const State& state) {
     drawBluetoothActions(state);
   }
   center(bluetoothForgetConfirm ? tr("取消或返回即可保留绑定", "Cancel or Back keeps your pairing")
-      : tr("右上角返回声音与显示", "Tap Back above for Sound & display"),640,654,MUTED,UiFont::sans20());
+      : tr("已连接但操作无响应时，可退出并重新打开电脑上的 Codex", "If linked controls do not respond, quit and reopen Codex on your computer"),
+      640,654,MUTED,UiFont::sans20());
 }
 
 void drawSettings(const State& state) {
@@ -950,7 +949,10 @@ bool updateBluetoothSettings(const State& state) {
     present(132,222,1016,370);
     return true;
   }
-  const bool stateChanged=!sameBluetooth(state,previousState);
+  const bool stateChanged=!sameBluetooth(state,previousState)
+      || state.usbMounted!=previousState.usbMounted
+      || state.selectedAgent!=previousState.selectedAgent
+      || state.hostChat.fresh!=previousState.hostChat.fresh;
   if (!stateChanged && !controlChanged) return false;
   if (stateChanged || (renderedSettingsControl==7)!=(previousSettingsControl==7)) {
     drawBluetoothToggle(state);
@@ -966,19 +968,10 @@ bool updateBluetoothSettings(const State& state) {
 }
 
 void drawHostSignal(const State& state) {
-  const auto signal = HostFeedback::classify(state.hostLights, state.connected);
-  const bool known = state.connected && state.hostLights.known;
-  auto zoneColor = [&](const HostFeedback::Zone& zone) {
-    return known && zone.brightness && zone.effect
-        ? mix(material->bodyTop, zone.color, zone.brightness / 255.f) : material->edge;
-  };
-  const uint32_t keys = zoneColor(state.hostLights.keys);
-  const uint32_t ambient = zoneColor(state.hostLights.ambient);
-  circleGradient(432, 49, 3, keys, keys);
-  circleGradient(446, 49, 3, ambient, ambient);
-  char label[96];
-  snprintf(label,sizeof(label),"%s%s",tr("最近：", "Last: "),localizedSignalLabel(signal));
-  text(label, 462, 41, MUTED, UiFont::sans16());
+  // Fresh metadata describes the explicitly tracked chat; it is not a native
+  // input acknowledgement or proof that the desktop currently accepts keys.
+  centerFitted(trackedChatSyncLabel(state),545,49,240,
+      state.hostChat.fresh ? INK : MUTED,UiFont::sans16());
 }
 
 void drawHeader(const State& state) {
@@ -989,13 +982,13 @@ void drawHeader(const State& state) {
   center(microphonePage ? tr("麦克风", "Microphone") : settingsMode ? tr("设置", "Settings") : state.lightingPreview ? tr("状态演示", "Preview") : playMode ? tr("游戏", "Play") : tr("控制台", "Console"),
          340, 49, INK, UiFont::sans24());
   if (!settingsMode && !playMode) drawHostSignal(state);
-  const bool synced = state.usbMounted || state.bleReady;
-  uint32_t connection = synced ? (dark() ? 0x9DD6BB : 0x3F8065) : MUTED;
+  const bool linked = state.usbMounted || state.bleReady;
+  const uint32_t connection = linked ? INK : MUTED;
   circleGradient(687, 49, 4, connection, connection);
   const char* connectionLabel=state.activeTransport==Transport::Bluetooth
-      ? tr("蓝牙已连接", "BLE connected")
-      : state.usbMounted ? tr("USB已连接", "USB connected")
-      : state.bleReady ? tr("蓝牙已连接", "BLE connected")
+      ? tr("蓝牙连接", "BLE linked")
+      : state.usbMounted ? tr("USB 连接", "USB linked")
+      : state.bleReady ? tr("蓝牙连接", "BLE linked")
       : state.blePairing ? tr("蓝牙配对中", "BLE pairing")
       : state.bleConnected ? tr("蓝牙连接中", "BLE connecting")
       : state.bleEnabled && state.bleBonded ? tr("蓝牙重连中", "BLE reconnect")
@@ -1137,7 +1130,7 @@ const char* actionCaption(const State& state, int index, HostFeedback::Action ac
   }
   if (!state.hostConfig.fresh || action == A::Unknown)
     return state.connected ? tr("配置未同步", "Not synced") : tr("桌面离线", "Host offline");
-  if (action == A::None) return tr("桌面未绑定", "Not assigned");
+  if (action == A::None) return "";
   return "";
 }
 
@@ -1149,18 +1142,33 @@ void drawMappedAction(const State& state, int index, int layoutIndex,
       || (index == 4 && action == HostFeedback::Action::Unknown);
   const bool unassigned = action == HostFeedback::Action::None;
   const uint8_t receipt = active ? 0 : actionReceipt(state, index, millis());
+  if (unassigned) {
+    // A known empty mapping is a quiet slot. Unknown mappings still retain
+    // their normal key appearance and native press/hold transport semantics.
+    paintBody(x,542,w,150);
+    const uint32_t face = mix(material->bodyTop,material->trayTop,.65f);
+    MaterialGradient::solidRoundRect565(canvas,x+3,545,w-6,138,22,surface565(face));
+    MaterialGradient::strokeRoundRect(canvas,x+3,545,w-6,138,22,.7f,
+        mix(face,material->edge,.45f));
+    centerFitted(actionLabel(action,fallback),cx,617,w-24,MUTED,UiFont::sans20());
+    renderedActionFeedback[index] = receipt;
+    return;
+  }
   const uint32_t accent = receipt == 2 ? (dark() ? 0xE9A6A8 : 0xA84C51)
       : receipt ? material->accent : actionAccent(layoutIndex);
   keycap(x, 542, w, 150, active, active || receipt ? accent : 0);
   const int drop = active ? 2 : 0;
   const uint32_t ink = unassigned ? MUTED : INK;
-  const char* caption=receipt ? transportReceipt(state,receipt==1) : actionCaption(state,index,action);
+  // Keep the label and icon anchored while feedback appears in its own line.
+  // A submitted transport message gets a brief outline, not a success claim.
+  const char* caption=receipt==2 ? transportReceipt(state,false)
+      : active && voice ? tr("已按住", "Held") : actionCaption(state,index,action);
   const bool hasCaption=caption[0]!=0;
-  UiIcons::draw(canvas, actionIcon(action, index), cx, (hasCaption ? 588 : 597) + drop, 32,
+  UiIcons::draw(canvas, actionIcon(action, index), cx, 588 + drop, 32,
       active ? accent : ink);
-  centerFitted(active && voice ? tr("已按住", "Held") : actionLabel(action, fallback),
-      cx, (hasCaption ? 635 : 642) + drop, w - 24, ink, UiFont::sans28());
-  if (hasCaption) center(caption,cx,668+drop,receipt ? accent : MUTED,UiFont::sans16());
+  centerFitted(actionLabel(action, fallback),
+      cx, 635 + drop, w - 24, ink, UiFont::sans28());
+  if (hasCaption) center(caption,cx,668+drop,receipt==2 ? accent : MUTED,UiFont::sans16());
   renderedActionFeedback[index] = receipt;
 }
 
@@ -1177,25 +1185,8 @@ void drawAction(int i, const State& state) {
   }
 }
 
-void drawCounter() {
-  uint32_t started = micros();
-  if (!restoreBackdrop(counterBackdrop, COUNTER_X, COUNTER_Y, COUNTER_W, COUNTER_H))
-    drawCounterMaterial();
-  profiling.counterRestore = max(profiling.counterRestore, micros() - started);
-  started = micros();
-  char count[24];
-  snprintf(count, sizeof(count), "%+ld", (long)controls.detent);
-  canvas.setClipRect(380, 311, 112, 47);
-  const auto* font = UiFont::sans40();
-  if (UiText::bounds(font, count).w > 108) font = UiFont::sans32();
-  if (UiText::bounds(font, count).w > 108) font = UiFont::sans24();
-  center(count, 436, 334, INK, font);
-  canvas.clearClipRect();
-  profiling.counterText = max(profiling.counterText, micros() - started);
-}
-
-void drawRotary(bool updateCounter = true) {
-  constexpr int cx = 244, cy = 352;
+void drawRotary() {
+  constexpr int cx = ControlLayout::DialX, cy = ControlLayout::DialY;
   constexpr float tau = 6.28318530718f;
   const uint32_t age = controls.dialPressed ? millis() - controls.pressStarted : 0;
   const bool longPress = controls.dialPressed && age >= 500;
@@ -1224,68 +1215,48 @@ void drawRotary(bool updateCounter = true) {
       -90, -90 + min(age, uint32_t(500)) * .72f, 2.7f,
       age >= 500 ? (dark() ? 0x9DD6BB : 0x3F8065) : material->accent);
   profiling.dialArc = max(profiling.dialArc, micros() - started);
-  if (updateCounter) drawCounter();
-}
-
-const char* stickDirection() {
-  const float x = controls.stickX, y = controls.stickY;
-  if (sqrtf(x * x + y * y) < .05f) return tr("归中", "Centered");
-  if (fabsf(x) < .25f) return y < 0 ? tr("向上", "Up") : tr("向下", "Down");
-  if (fabsf(y) < .25f) return x < 0 ? tr("向左", "Left") : tr("向右", "Right");
-  if (x < 0) return y < 0 ? tr("左上", "Up-left") : tr("左下", "Down-left");
-  return y < 0 ? tr("右上", "Up-right") : tr("右下", "Down-right");
 }
 
 void drawStick() {
-  constexpr int cx = 802, cy = 352;
+  constexpr int cx = ControlLayout::StickX, cy = ControlLayout::StickY;
+  constexpr int arrow = ControlLayout::StickArrowRadius;
   if (!restoreBackdrop(stickBackdrop, STICK_X, STICK_Y, STICK_W, STICK_H)) drawStickMaterial();
   const uint32_t accent = material->accent;
-  if (controls.stickY < -.2f) UiIcons::draw(canvas, UiIcons::Icon::ChevronUp, cx, 247, 16, accent);
-  if (controls.stickY > .2f) UiIcons::draw(canvas, UiIcons::Icon::ChevronDown, cx, 457, 16, accent);
-  if (controls.stickX < -.2f) UiIcons::draw(canvas, UiIcons::Icon::ChevronLeft, 697, cy, 16, accent);
-  if (controls.stickX > .2f) UiIcons::draw(canvas, UiIcons::Icon::ChevronRight, 907, cy, 16, accent);
+  using Direction = MicroControls::StickDirection;
+  const auto direction = MicroControls::stickDirection(controls.stickX, controls.stickY);
+  if (direction == Direction::Up) UiIcons::draw(canvas, UiIcons::Icon::ChevronUp, cx, cy - arrow, 16, accent);
+  if (direction == Direction::Down) UiIcons::draw(canvas, UiIcons::Icon::ChevronDown, cx, cy + arrow, 16, accent);
+  if (direction == Direction::Left) UiIcons::draw(canvas, UiIcons::Icon::ChevronLeft, cx - arrow, cy, 16, accent);
+  if (direction == Direction::Right) UiIcons::draw(canvas, UiIcons::Icon::ChevronRight, cx + arrow, cy, 16, accent);
   const int x = cx + controls.stickX * 60, y = cy + controls.stickY * 60;
   MaterialGradient::line(canvas, cx, cy, x, y, 1.4f, accent);
   MaterialGradient::shadowCircle(canvas, x, y + 3, 29, 5, 100, material->deepShadow);
   metalFace(x, y, 29, mix(material->metalTop, material->metalBottom, .50f), 1.5f);
-  MaterialGradient::strokeCircle(canvas, x, y, 29, .8f,
-      mix(material->metalTop, material->highlight, .5f));
+  MaterialGradient::strokeCircle(canvas, x, y, 29, dark() ? 1.2f : .8f,
+      mix(material->metalTop, material->highlight, dark() ? .25f : .5f));
   metalFace(x, y, 23, controls.stickActive ? material->keyPressed : material->keyTop, 1.f);
   uint32_t point = controls.stickActive ? accent : MUTED;
   circleGradient(x, y, 2, point, point);
-  paintTray(FEEDBACK_X, FEEDBACK_Y, FEEDBACK_W, FEEDBACK_H);
-  center(stickDirection(), 1107, 296, INK, UiFont::sans28());
-  char travel[24];
-  int distance = min(100, int(lroundf(sqrtf(controls.stickX * controls.stickX
-      + controls.stickY * controls.stickY) * 100)));
-  snprintf(travel, sizeof(travel), "%d%%", distance);
-  center(travel, 1107, 336, MUTED, UiFont::sans32());
 }
 
-void drawEncoderConfig(const State& state) {
-  const auto mode = state.hostConfig.fresh ? state.hostConfig.encoder : HostFeedback::Encoder::Unknown;
-  const char* label = tr("转动外环", "Turn the ring");
-  switch (mode) {
-    case HostFeedback::Encoder::Composer: label = tr("输入导航", "Navigation"); break;
-    case HostFeedback::Encoder::Reasoning: label = tr("推理强度", "Reasoning"); break;
-    case HostFeedback::Encoder::Scroll: label = tr("对话滚动", "Chat scroll"); break;
-    case HostFeedback::Encoder::Custom: label = tr("自定义", "Custom"); break;
-    default: break;
-  }
-  paintTray(372, 376, 128, 74);
-  center(label, 436, 398, INK, UiFont::sans20());
-  const char* caption = mode != HostFeedback::Encoder::Unknown ? ""
-      : !state.connected ? tr("桌面离线", "Host offline")
-      : state.hostConfig.fresh ? tr("配置项未知", "Mode unknown") : tr("配置未同步", "Not synced");
-  center(caption,
-         436, 432, MUTED, UiFont::sans16());
+void drawDialHint() {
+  if (renderedDialHint)
+    center(tr("点按或长按旋钮中心", "Tap or hold the dial center"),
+        ControlLayout::ChatCenterX,420,MUTED,UiFont::sans20());
 }
 
 void drawChatFeedback(const State& state) {
   const auto& chat=state.hostChat;
-  paintTray(710,210,184,26);
+  paintTray(ControlLayout::ChatX + 12, ControlLayout::ChatY + 12,
+            ControlLayout::ChatWidth - 24, ControlLayout::ChatHeight - 24);
   paintBody(28,500,1224,36);
-  center(tr("指定聊天设置", "Tracked settings"),152,518,MUTED,UiFont::sans16());
+  MaterialGradient::solidRoundRect565(canvas,28,500,1224,36,10,
+      surface565(mix(material->bodyTop,material->trayTop,.65f)));
+  MaterialGradient::strokeRoundRect(canvas,28,500,1224,36,10,.8f,
+      mix(material->trayTop,material->edge,.45f));
+  MaterialGradient::line(canvas,282,509,282,527,.8f,material->edge);
+  center(state.selectedAgent >= 0 ? tr("所选 Agent 设置", "Agent settings")
+      : tr("指定聊天设置", "Tracked chat settings"),152,518,MUTED,UiFont::sans16());
   const char* speed=!chat.fresh ? tr("快速：未知", "Fast: unknown")
       : chat.speed==HostFeedback::Speed::Fast ? tr("快速：开启", "Fast: on")
       : chat.speed==HostFeedback::Speed::UltraFast ? tr("极速：开启", "Ultra: on")
@@ -1309,27 +1280,27 @@ void drawChatFeedback(const State& state) {
   center(access,790,518,chat.fresh ? INK : MUTED,UiFont::sans16());
   center(tr("操作目标未核对", "Target not verified"),1096,518,
       dark() ? 0xDAB785 : 0x876027,UiFont::sans16());
-  paintTray(1008,378,198,75);
-  center(chat.fresh ? tr("指定聊天", "Tracked chat") : tr("聊天状态未同步", "Chat not synced"),1107,390,MUTED,UiFont::sans16());
-  if (chat.fresh) {
-    if (!paintTitle(6, chat.title, 1016, 401, 182, INK, true))
-      center(tr("未命名聊天", "Untitled chat"),1107,426,MUTED,UiFont::sans20());
+  center(state.selectedAgent >= 0 ? tr("所选 Agent", "Selected Agent")
+      : chat.fresh ? tr("指定聊天", "Tracked chat") : tr("聊天状态未同步", "Chat not synced"),
+         ControlLayout::ChatCenterX,240,MUTED,UiFont::sans16());
+  if (state.selectedAgent >= 0) {
+    titles[6].visible = false;
+    char label[20];
+    snprintf(label,sizeof(label),"Agent %02d",int(state.selectedAgent)+1);
+    center(label,ControlLayout::ChatCenterX,289,INK,UiFont::sans28());
+    center(tr("标题未同步", "Title not synced"),ControlLayout::ChatCenterX,330,MUTED,UiFont::sans20());
+  } else if (chat.fresh) {
+    if (!paintTitle(6, chat.title, ControlLayout::ChatX + 24, 264, ControlLayout::ChatWidth - 48, INK, true))
+      center(tr("未命名聊天", "Untitled chat"),ControlLayout::ChatCenterX,289,MUTED,UiFont::sans20());
   } else titles[6].visible = false;
+  drawDialHint();
 }
 
 void drawDashboard(const State& state) {
   for (int i = 0; i < 6; ++i) drawSlot(i, state.slots[i], state.connected, state.titlesFresh);
-  tray(28, 208, 484, 288);
-  tray(528, 208, 724, 288);
-  text(tr("旋钮", "Dial"), 52, 226, INK, UiFont::sans24());
-  center(tr("步进", "Steps"), 436, 290, MUTED, UiFont::sans16());
-  drawEncoderConfig(state);
-  text(tr("摇杆", "Joystick"), 552, 226, INK, UiFont::sans24());
-  center(tr("后退", "Back"), 654, 352, MUTED, UiFont::sans20());
-  // Keep the English caption between the right chevron and the readout's
-  // restored rectangle at x=988, including after the stick moves.
-  center(tr("前进", "Next"), 956, 352, MUTED, UiFont::sans20());
-  center(tr("侧栏", "Sidebar"), 802, 481, MUTED, UiFont::sans20());
+  tray(ControlLayout::DialTrayX, ControlLayout::TrayY, ControlLayout::TrayWidth, ControlLayout::TrayHeight);
+  tray(ControlLayout::ChatX, ControlLayout::ChatY, ControlLayout::ChatWidth, ControlLayout::ChatHeight);
+  tray(ControlLayout::StickTrayX, ControlLayout::TrayY, ControlLayout::TrayWidth, ControlLayout::TrayHeight);
   drawChatFeedback(state);
   rebuildBackdrops();
   drawRotary();
@@ -1361,7 +1332,9 @@ bool updateHeader(const State& state) {
     paintBody(28, 5, 1224, 91);
     drawHeader(state);
     present(28, 5, 1224, 91);
-  } else if (!settingsMode && !playMode && !sameLights(state.hostLights, previousState.hostLights)) {
+  } else if (!settingsMode && !playMode
+      && (state.hostChat.fresh != previousState.hostChat.fresh
+          || state.selectedAgent != previousState.selectedAgent)) {
     paintBody(420, 31, 250, 38);
     drawHostSignal(state);
     present(420, 31, 250, 38);
@@ -1410,19 +1383,19 @@ bool updateDashboard(const State& state) {
       drew = true;
     }
   }
-  if (state.connected != previousState.connected
-      || state.hostConfig.fresh != previousState.hostConfig.fresh
-      || state.hostConfig.encoder != previousState.hostConfig.encoder) {
-    drawEncoderConfig(state);
-    present(372, 376, 128, 74);
-    drew = true;
-  }
   if (!sameChat(state.hostChat,previousState.hostChat)
+      || state.selectedAgent != previousState.selectedAgent
       || effectsFrozen != previousEffectsFrozen) {
     drawChatFeedback(state);
-    present(710,210,184,26);
-    present(1008,378,198,75);
+    present(ControlLayout::ChatX + 12, ControlLayout::ChatY + 12,
+            ControlLayout::ChatWidth - 24, ControlLayout::ChatHeight - 24);
     present(28,500,1224,36);
+    drew=true;
+  }
+  if (renderedDialHint != previousDialHint) {
+    paintTray(ControlLayout::ChatX + 24,392,ControlLayout::ChatWidth - 48,56);
+    drawDialHint();
+    present(ControlLayout::ChatX + 24,392,ControlLayout::ChatWidth - 48,56);
     drew=true;
   }
   // Compare the completed gesture with what was actually painted. A slow
@@ -1434,11 +1407,9 @@ bool updateDashboard(const State& state) {
       || controls.detent != previousControls.detent
       || controls.dialPressed != previousControls.dialPressed
       || controls.dialTurning != previousControls.dialTurning || holdAnimating) {
-    const bool countChanged = controls.detent != previousControls.detent;
-    drawRotary(countChanged);
+    drawRotary();
     const uint32_t presentStarted = micros();
     present(DIAL_X, DIAL_Y, DIAL_W, DIAL_H);
-    if (countChanged) present(COUNTER_X, COUNTER_Y, COUNTER_W, COUNTER_H);
     profiling.dialPresent = max(profiling.dialPresent, micros() - presentStarted);
     drew = true;
   }
@@ -1446,7 +1417,6 @@ bool updateDashboard(const State& state) {
       || controls.stickActive != previousControls.stickActive) {
     drawStick();
     present(STICK_X, STICK_Y, STICK_W, STICK_H);
-    present(FEEDBACK_X, FEEDBACK_Y, FEEDBACK_W, FEEDBACK_H);
     drew = true;
   }
   return drew;
@@ -1471,9 +1441,9 @@ TitleScrollStatus titleScrollStatus(uint8_t index) {
   result.height = TitleRenderer::ViewHeight;
   result.lineHeight = TitleScroll::LineHeight;
   result.offset = panel.cache.offset();
-  result.maxOffset = result.lines > 2 ? result.lines * TitleScroll::LineHeight - 1 : 0;
+  result.maxOffset = panel.cache.maxOffset();
   result.elapsed = panel.clock.elapsed();
-  result.cycle = TitleScroll::cycleMs(result.lines);
+  result.cycle = panel.cache.cycleMs();
   result.paused = panel.clock.paused();
   result.frames = panel.frames;
   result.cachedBytes = panel.cache.bytes();
@@ -1504,6 +1474,8 @@ bool init() {
   uint8_t saved = preferencesReady ? preferences.getUChar("theme", 0) : 0;
   input.theme = saved == uint8_t(Theme::Dark) ? Theme::Dark : Theme::Light;
   themePersistence = DeferredSetting<Theme>(input.theme);
+  dialHintSeen = preferencesReady && preferences.getBool("dial-help",false);
+  dialHintPersistence = DeferredSetting<bool>(dialHintSeen);
   applyMaterial(input.theme);
   dialBackdrops[0] = static_cast<uint16_t*>(heap_caps_malloc(DIAL_W * DIAL_H * 2,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -1512,8 +1484,6 @@ bool init() {
   stickBackdrop = static_cast<uint16_t*>(heap_caps_malloc(STICK_W * STICK_H * 2,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   longPressCenter = static_cast<uint16_t*>(heap_caps_malloc(CENTER_W * CENTER_H * 2,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  counterBackdrop = static_cast<uint16_t*>(heap_caps_malloc(COUNTER_W * COUNTER_H * 2,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   MicroControls::reset();
   MicroGames::init();
@@ -1524,9 +1494,28 @@ bool init() {
 
 void invalidateDisplay() { displayInvalidated=true; }
 
-bool render(const State& liveState) {
+void syncInputPolicy(const State& liveState) {
+  portENTER_CRITICAL(&inputMux);
+  uint8_t releaseMask = 0;
+  const bool knownActions = liveState.connected && liveState.hostConfig.fresh;
+  bool actionPolicyChanged = inputActionTransport != liveState.activeTransport;
+  inputActionTransport = liveState.activeTransport;
+  for (int i=0;i<7;++i) {
+    const auto action = knownActions ? liveState.hostConfig.actions[i] : HostFeedback::Action::Unknown;
+    actionPolicyChanged |= inputActionMappings[i] != action;
+    inputActionMappings[i] = action;
+    if (action == HostFeedback::Action::Approve || action == HostFeedback::Action::Reject
+        || action == HostFeedback::Action::Send) releaseMask |= 1u << i;
+  }
+  if (actionPolicyChanged) MicroControls::cancelDeferredAction();
+  MicroControls::setReleaseActionMask(releaseMask);
+  portEXIT_CRITICAL(&inputMux);
+}
+
+bool render(const State& liveState, bool diagnosticInput) {
   uint32_t now = millis();
   if (!ready) return false;
+  syncInputPolicy(liveState);
   const uint32_t localeRevision = UiLocale::revision();
   const bool localeChanged = localeRevision != appliedLocaleRevision;
   InputState snapshot;
@@ -1545,6 +1534,19 @@ bool render(const State& liveState) {
     const bool saved = preferences.putUChar("theme", uint8_t(themePersistence.value())) == 1;
     themePersistence.completed(saved, millis());
   }
+  // The hint observes input only; native encoder timing and events are untouched.
+  const bool hintContext = !diagnosticInput && !snapshot.effectsFrozen
+      && !snapshot.settingsMode && !snapshot.playMode;
+  if (hintContext && visual.dialPressed) dialHintSeen = true;
+  if (hintContext && dialHintLastAt && dialHintElapsed < 8000)
+    dialHintElapsed = std::min<uint32_t>(8000,dialHintElapsed + uint32_t(now-dialHintLastAt));
+  dialHintLastAt = now;
+  const bool nextDialHint = hintContext && !dialHintSeen && dialHintElapsed < 8000;
+  dialHintPersistence.observe(dialHintSeen,snapshot.finger,now);
+  if (preferencesReady && dialHintPersistence.due(now)) {
+    const bool saved = preferences.putBool("dial-help",dialHintPersistence.value()) == 1;
+    dialHintPersistence.completed(saved,millis());
+  }
   // Cooperative input/RX may mutate the live source while drawing. Retain one
   // consistent frame on static storage rather than the small Arduino stack.
   static State state;
@@ -1555,6 +1557,7 @@ bool render(const State& liveState) {
   const bool micMeterDue=snapshot.settingsMode && snapshot.microphonePage
       && !snapshot.effectsFrozen && !snapshot.finger && now-microphoneMeterAt>=40;
   const bool immediate = localeChanged || titleTestRevision != appliedTitleTestRevision || displayInvalidated || snapshot.held != held || snapshot.playMode != playMode
+      || nextDialHint != renderedDialHint || state.selectedAgent != previousState.selectedAgent
       || snapshot.settingsMode != settingsMode
       || snapshot.bluetoothPage != bluetoothPage
       || snapshot.microphonePage != microphonePage
@@ -1600,6 +1603,7 @@ bool render(const State& liveState) {
   bluetoothForgetConfirm = snapshot.bluetoothForgetConfirm;
   forceFullPresent = snapshot.fullPresent;
   effectsFrozen = snapshot.effectsFrozen;
+  renderedDialHint = nextDialHint;
   renderedSoundEnabled = snapshot.soundEnabled;
   renderedVolume = snapshot.volume;
   renderedBrightness = snapshot.brightness;
@@ -1714,6 +1718,7 @@ bool render(const State& liveState) {
   previousBluetoothForgetConfirm = bluetoothForgetConfirm;
   previousHeaderHeld = headerHeld;
   previousEffectsFrozen = effectsFrozen;
+  previousDialHint = renderedDialHint;
   appliedTitleTestRevision = titleTestRevision;
   appliedThemeRevision = snapshot.themeRevision;
   appliedLocaleRevision = localeRevision;

@@ -1,4 +1,6 @@
 from copy import deepcopy
+import hashlib
+import io
 import json
 from pathlib import Path
 import sys
@@ -29,6 +31,88 @@ class BleNativeTests(unittest.TestCase):
             self.assertEqual(result['encoder'],'composer-navigation')
             self.assertEqual(result['actions'][0],'fast')
             self.assertEqual(result['joystick_up'],'plan')
+            self.assertEqual(result['layout_source'],'native-default')
+            self.assertIs(result['layout_invalid'],False)
+    def test_invalid_encoder_uses_complete_native_defaults_for_every_plan(self):
+        layout=deepcopy(desktop_sync.DEFAULT_LAYOUT);layout['encoder']={}
+        for plan in qa.PLANS:
+            with self.subTest(plan=plan):
+                result=self.mapping(plan,layout)
+                self.assertEqual(result['encoder'],'composer-navigation')
+                self.assertEqual(result['actions'],['fast','approve','reject','fork','voice','none','send'])
+                self.assertEqual(result['joystick_up'],'plan')
+                self.assertEqual(result['layout_source'],'global-state')
+                self.assertIs(result['layout_invalid'],True)
+                self.assertEqual(result['fingerprint'],hashlib.sha256(
+                    json.dumps(layout,sort_keys=True,separators=(',',':')).encode()).hexdigest())
+    def test_invalid_layout_discards_all_custom_actions_without_leaking_text(self):
+        layout=deepcopy(desktop_sync.DEFAULT_LAYOUT)
+        layout['encoder']={}
+        layout['encoderMode']='custom'
+        layout['slots']['ACT06']['action']={'type':'composer-text','text':SECRET}
+        layout['analogStick']['up']={'type':'skill','skillName':SECRET,'skillPath':'/'+SECRET}
+        for plan in qa.PLANS:
+            with self.subTest(plan=plan):
+                result=self.mapping(plan,layout)
+                self.assertEqual(result['encoder'],'composer-navigation')
+                self.assertEqual(result['actions'],['fast','approve','reject','fork','voice','none','send'])
+                self.assertEqual(result['joystick_up'],'plan')
+                self.assertIs(result['layout_invalid'],True)
+                self.assertNotIn(SECRET,json.dumps(result))
+    def test_invalid_authoritative_toml_does_not_use_global_custom_mapping(self):
+        layout=deepcopy(desktop_sync.DEFAULT_LAYOUT)
+        layout['slots']['ACT06']['action']={'type':'command','commandId':'composer.submit'}
+        self.state.write_text(json.dumps({desktop_sync.LAYOUT_KEY:layout}))
+        self.config.write_text('[desktop]\ncodex-micro-layout = {version = 2}\n')
+        for plan in qa.PLANS:
+            with self.subTest(plan=plan):
+                result=self.mapping(plan)
+                self.assertEqual(result['actions'][0],'fast')
+                self.assertEqual(result['layout_source'],'desktop-config')
+                self.assertIs(result['layout_invalid'],True)
+    def test_valid_layout_retains_raw_source_and_is_not_marked_invalid(self):
+        result=self.mapping('fast',deepcopy(desktop_sync.DEFAULT_LAYOUT))
+        self.assertEqual(result['layout_source'],'global-state')
+        self.assertIs(result['layout_invalid'],False)
+    def test_invalid_raw_edit_changes_fingerprint_and_fails_mapping_continuity(self):
+        layout=deepcopy(desktop_sync.DEFAULT_LAYOUT);layout['encoder']={}
+        layout['slots']['ACT06']['action']={'type':'composer-text','text':SECRET}
+        before=self.mapping('fast',layout)
+        layout['slots']['ACT06']['action']['text']=SECRET+'-edited'
+        after=self.mapping('fast',layout)
+        self.assertNotEqual(before['fingerprint'],after['fingerprint'])
+        self.assertEqual({k:v for k,v in before.items() if k!='fingerprint'},
+                         {k:v for k,v in after.items() if k!='fingerprint'})
+        args=SimpleNamespace(state=self.state,config=self.config,plan='fast',cache=self.root/'cache',thread_id=TARGET)
+        with patch.object(qa,'mac_unlocked',return_value=True), \
+             patch.object(qa,'topology',return_value=['bluetooth']), \
+             patch.object(qa,'cache_summary',return_value={'tier':'fast'}):
+            observation=qa.sample_observation(args,before,qa.time.monotonic())
+        self.assertIs(observation['mapping_unchanged'],False)
+        self.assertNotIn('error',observation)
+    def test_valid_unknown_and_custom_mappings_remain_refused_for_every_plan(self):
+        layouts=[]
+        for action in ({'type':'command','commandId':'unrecognized.synthetic.command'},
+                       {'type':'composer-text','text':SECRET},
+                       {'type':'skill','skillName':SECRET,'skillPath':'/'+SECRET}):
+            layout=deepcopy(desktop_sync.DEFAULT_LAYOUT)
+            layout['slots']['ACT06']['action']=action
+            layouts.append(layout)
+        layout=deepcopy(desktop_sync.DEFAULT_LAYOUT);layout['encoderMode']='custom';layouts.append(layout)
+        layout=deepcopy(desktop_sync.DEFAULT_LAYOUT)
+        layout['analogStick']['right']={'type':'skill','skillName':SECRET,'skillPath':'/'+SECRET}
+        layouts.append(layout)
+        for index,layout in enumerate(layouts):
+            for plan in qa.PLANS:
+                with self.subTest(layout=index,plan=plan),self.assertRaises(RuntimeError):
+                    self.mapping(plan,layout)
+    def test_valid_null_up_binding_is_not_repaired_into_plan(self):
+        layout=deepcopy(desktop_sync.DEFAULT_LAYOUT);layout['analogStick']['up']=None
+        for plan in ('fast','dial'):
+            result=self.mapping(plan,layout)
+            self.assertEqual(result['joystick_up'],'unknown')
+            self.assertIs(result['layout_invalid'],False)
+        with self.assertRaises(RuntimeError):self.mapping('plan',layout)
     def test_fast_custom_or_send_refused(self):
         for action in ({"type":"composer-text","text":SECRET},{"type":"command","commandId":"composer.submit"}):
             layout=deepcopy(desktop_sync.DEFAULT_LAYOUT);layout['slots']['ACT06']['action']=action
@@ -221,7 +305,38 @@ class BleNativeTests(unittest.TestCase):
     def test_argument_default_is_dry_run(self):
         args=qa.arguments(['--plan','fast','--thread-id',TARGET])
         self.assertFalse(args.execute);self.assertFalse(args.confirm_target_active)
+        self.assertEqual(args.firmware,qa.DEFAULT_FIRMWARE)
         with self.assertRaises(RuntimeError):qa.arguments(['--plan','fast','--thread-id',TARGET,'--pause-seconds','10'])
+    def test_firmware_name_normalizes_only_exact_release_versions(self):
+        self.assertEqual(qa.DEFAULT_FIRMWARE,'tab5-micro-0.13.1')
+        for version in ('0.13.1','0.13.0','0.12.0','1.2.3','123.45.6'):
+            for value in (version,'tab5-micro-'+version):
+                with self.subTest(value=value):
+                    self.assertEqual(qa.firmware_name(value),'tab5-micro-'+version)
+        for value in ('','0.13','0.13.0.1','v0.13.0','tab5-micro-v0.13.0',
+                      '0.13.0-beta','tab5-micro-0.13.0.bin',' 0.13.0','0.13.0 ',
+                      '0.13.0\n','prefix-tab5-micro-0.13.0',None,True,13,[]):
+            with self.subTest(value=value),self.assertRaises(ValueError):qa.firmware_name(value)
+    def test_firmware_argument_accepts_explicit_old_pin_and_rejects_invalid_version(self):
+        for value in ('0.12.0','tab5-micro-0.12.0'):
+            with self.subTest(value=value):
+                args=qa.arguments(['--plan','fast','--thread-id',TARGET,'--firmware',value])
+                self.assertEqual(args.firmware,'tab5-micro-0.12.0')
+        for value in ('0.13','0.13.0-beta','0.13.0\n'):
+            with self.subTest(value=value),patch('sys.stderr',io.StringIO()),self.assertRaises(SystemExit):
+                qa.arguments(['--plan','fast','--thread-id',TARGET,'--firmware',value])
+    def test_preflight_reports_exact_expected_firmware_without_device_access(self):
+        for value,expected in ((None,qa.DEFAULT_FIRMWARE),('0.12.0','tab5-micro-0.12.0')):
+            argv=['--plan','fast','--thread-id',TARGET,'--confirm-target-active']
+            if value is not None:argv.extend(['--firmware',value])
+            args=qa.arguments(argv)
+            with self.subTest(value=value), \
+                 patch.object(qa,'mapping_summary',return_value={'fingerprint':'checked'}), \
+                 patch.object(qa,'mac_unlocked',return_value=True), \
+                 patch.object(qa,'cache_summary',return_value={'tier':'standard'}):
+                report=qa.preflight(args)
+            self.assertEqual(report['expected_firmware'],expected)
+            self.assertTrue(report['ready'])
     def test_main_dry_run_never_executes(self):
         output=self.root/'out.json'
         with patch.object(qa,'preflight',return_value={'ready':False,'errors':['locked']}), patch.object(qa,'execute') as run:
@@ -240,7 +355,7 @@ class BleNativeTests(unittest.TestCase):
         text=json.dumps(qa.device_projection(data));self.assertNotIn(SECRET,text);self.assertNotIn(TARGET,text)
 
     def test_prearm_accepts_authenticated_session_before_hid_subscription(self):
-        before={'firmware':'tab5-micro-0.12.0','active_transport':'usb','input_capture':False,
+        before={'firmware':qa.DEFAULT_FIRMWARE,'active_transport':'usb','input_capture':False,
                 'lighting_preview':False,'bluetooth':{'session':7,'enabled':True,'connected':True,
                     'authenticated':True,'bonded':True,'ready':False,'inputs_submitted':10},
                 'host_feedback':{'config_fresh':True,'chat':{'fresh':True,'thread_id':TARGET},'actions':[2]*7}}
@@ -249,8 +364,26 @@ class BleNativeTests(unittest.TestCase):
         before['bluetooth']['ready']=True
         qa.check_device(before,args)
 
+    def test_prearm_firmware_must_match_the_default_or_explicit_old_pin_exactly(self):
+        before={'firmware':qa.DEFAULT_FIRMWARE,'active_transport':'usb','input_capture':False,
+                'lighting_preview':False,'bluetooth':{'session':7,'enabled':True,'connected':True,
+                    'authenticated':True,'bonded':True,'ready':True,'inputs_submitted':10},
+                'host_feedback':{'config_fresh':True,'chat':{'fresh':True,'thread_id':TARGET},'actions':[2]*7}}
+        args=SimpleNamespace(plan='fast',thread_id=TARGET)
+        qa.check_device(before,args)
+        for firmware in ('tab5-micro-0.13.0','tab5-micro-0.12.0','0.13.1','tab5-micro-0.13.1-extra',None):
+            with self.subTest(firmware=firmware):
+                changed=deepcopy(before);changed['firmware']=firmware
+                with self.assertRaises(RuntimeError):qa.check_device(changed,args)
+        for pin in ('0.12.0','tab5-micro-0.12.0'):
+            with self.subTest(pin=pin):
+                old_args=SimpleNamespace(plan='fast',thread_id=TARGET,firmware=pin)
+                changed=deepcopy(before);changed['firmware']='tab5-micro-0.12.0'
+                qa.check_device(changed,old_args)
+                with self.assertRaises(RuntimeError):qa.check_device(before,old_args)
+
     def test_prearm_never_uses_bond_or_ready_as_current_authentication(self):
-        before={'firmware':'tab5-micro-0.12.0','active_transport':'usb','input_capture':False,
+        before={'firmware':qa.DEFAULT_FIRMWARE,'active_transport':'usb','input_capture':False,
                 'lighting_preview':False,'bluetooth':{'session':7,'enabled':True,'connected':True,
                     'authenticated':True,'bonded':True,'ready':True,'inputs_submitted':10},
                 'host_feedback':{'config_fresh':True,'chat':{'fresh':True,'thread_id':TARGET},'actions':[2]*7}}
@@ -275,7 +408,7 @@ class BleNativeTests(unittest.TestCase):
         import tab5_transport
         args=qa.arguments(['--plan','fast','--thread-id',TARGET,'--execute','--confirm-target-active'])
         mapping={'fingerprint':'checked'}
-        before={'firmware':'tab5-micro-0.12.0','active_transport':'usb','input_capture':False,
+        before={'firmware':qa.DEFAULT_FIRMWARE,'active_transport':'usb','input_capture':False,
                 'lighting_preview':False,'bluetooth':{'session':7,'enabled':True,'connected':True,
                     'authenticated':True,'bonded':True,'ready':True,'inputs_submitted':10},
                 'host_feedback':{'config_fresh':True,'chat':{'fresh':True,'thread_id':TARGET},'actions':[2]*7}}

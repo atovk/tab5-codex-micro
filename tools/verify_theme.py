@@ -11,35 +11,41 @@ import time
 
 from PIL import Image, ImageStat
 
+from control_layout import CURRENT as LAYOUT, VERSION
 from tab5_transport import open_serial
 from verify_device import read_line, screenshot, status
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "artifacts"
-VERSION = "0.11.1"
 
 # Pillow boxes exclude the right/bottom edges. These patches stay completely
 # inside flat faces, away from AA, bevels, dial marks/text and the stick axes.
 SURFACE_PATCHES = {
     "body": (600, 8, 650, 24),
-    "tray": (52, 280, 112, 450),
+    "tray": (52, 280, 76, 450),
     "key_face": (60, 554, 146, 566),
-    # Dial center (244,352): r63.5..71.1 clears its r60 inset, r78 dot and ticks.
-    "dial_face": (173, 342, 181, 362),
-    "dial_center_face": (230, 316, 258, 326),
-    # Stick center (802,352): r62.9..81.3 clears the r62 ring and both axes.
-    "stick_recess": (744, 294, 758, 308),
-    "knob_center": (790, 339, 800, 347),
+    # r63.5..71.1 clears the dial's r60 inset, r78 dot and ticks.
+    "dial_face": (LAYOUT.dial_x - 71, LAYOUT.dial_y - 10,
+                  LAYOUT.dial_x - 63, LAYOUT.dial_y + 10),
+    "dial_center_face": (LAYOUT.dial_x - 14, LAYOUT.dial_y - 36,
+                         LAYOUT.dial_x + 14, LAYOUT.dial_y - 26),
+    # r74.9..93.3 clears the stick's r70 ring, r106 bevel and both axes.
+    "stick_recess": (LAYOUT.stick_x - 66, LAYOUT.stick_y - 66,
+                     LAYOUT.stick_x - 52, LAYOUT.stick_y - 52),
+    "knob_center": (LAYOUT.stick_x - 12, LAYOUT.stick_y - 13,
+                    LAYOUT.stick_x - 2, LAYOUT.stick_y - 5),
 }
 
 # Current Micro UI face colors before nearest-565 conversion. The dial is the
 # 50% RGB888 mix of metalTop/metalBottom; center and knob use the idle keyTop.
+# The well mixes recess/metalTop by .28f (dark) or .04f (light), truncating
+# each float channel to int exactly as micro_ui.cpp::mix does.
 CONTROL_FACE_RGB = {
     "dark": {"dial_face": 0x647186, "dial_center_face": 0x37414D,
-             "stick_recess": 0x151C27, "knob_center": 0x37414D},
+             "stick_recess": 0x353E4C, "knob_center": 0x37414D},
     "light": {"dial_face": 0xD9E0E9, "dial_center_face": 0xFFFFFF,
-              "stick_recess": 0xC6CFDC, "knob_center": 0xFFFFFF},
+              "stick_recess": 0xC8D0DD, "knob_center": 0xFFFFFF},
 }
 
 

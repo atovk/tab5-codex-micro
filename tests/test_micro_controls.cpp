@@ -1,4 +1,5 @@
 #include "micro_controls.h"
+#include "control_layout.h"
 
 #include <cmath>
 #include <cstring>
@@ -48,6 +49,12 @@ void keyEvent(const Events& events, const char* key, int action) {
           std::string("wrong key/action for ") + key);
 }
 
+void keyPair(const Events& events, const char* key) {
+  require(events.size() == 2, std::string(key) + ": expected one balanced press/release pair");
+  keyEvent({events[0]}, key, 1);
+  keyEvent({events[1]}, key, 0);
+}
+
 void joystickEvent(const Events& events, float angle, float distance) {
   require(events.size() == 1 && events[0].joystick && !events[0].key,
           "expected one joystick event");
@@ -57,7 +64,7 @@ void joystickEvent(const Events& events, float angle, float distance) {
 
 std::pair<int, int> ringPoint(double angleDegrees) {
   const double angle = angleDegrees * PI / 180.;
-  return {244 + int(std::lround(100 * std::cos(angle))),
+  return {ControlLayout::DialX + int(std::lround(100 * std::cos(angle))),
           352 + int(std::lround(100 * std::sin(angle)))};
 }
 
@@ -98,7 +105,7 @@ void ringRoundedSampleDensities() {
       int count = 0;
       for (int step = 0; step <= samples; ++step) {
         const double angle = direction * 2 * PI * step / samples;
-        auto events = sample(int(std::lround(244 + 96 * std::cos(angle))),
+        auto events = sample(int(std::lround(ControlLayout::DialX + 96 * std::cos(angle))),
                              int(std::lround(352 + 96 * std::sin(angle))),
                              true, 100 + step * 10);
         for (const auto& event : events) {
@@ -108,7 +115,7 @@ void ringRoundedSampleDensities() {
           ++count;
         }
       }
-      noEvents(sample(340, 352, false, 1000), "rounded circle release");
+      noEvents(sample((ControlLayout::DialX + 96), 352, false, 1000), "rounded circle release");
       const auto detents = MicroControls::visual().detent;
       if (count != 24 || detents != direction * 24) {
         if (!failures.empty()) failures += "; ";
@@ -132,7 +139,7 @@ void ringJitterAndWrap() {
 void ringCenterAndOutsideReanchor() {
   MicroControls::reset();
   noEvents(ring(0, 100), "ring capture");
-  noEvents(sample(244, 352, true, 110), "crossing ring center");
+  noEvents(sample(ControlLayout::DialX, 352, true, 110), "crossing ring center");
   noEvents(ring(180, 120), "opposite ring reentry");
   noEvents(ring(180, 130), "stationary reentry");
   auto events = ring(215, 140);
@@ -177,11 +184,11 @@ void allKeysPressHoldRelease() {
 
 void encoderPressAndHold() {
   MicroControls::reset();
-  keyEvent(sample(244, 352, true, 1000), "ENC", 1);
+  keyEvent(sample(ControlLayout::DialX, 352, true, 1000), "ENC", 1);
   auto visual = MicroControls::visual();
   require(visual.dialPressed && visual.pressStarted == 1000, "encoder hold start was not retained");
   for (int i = 0; i < 100; ++i)
-    noEvents(sample(244, 352, true, 1010 + i * 100), "encoder hold repeated");
+    noEvents(sample(ControlLayout::DialX, 352, true, 1010 + i * 100), "encoder hold repeated");
   noEvents(ring(45, 11020), "encoder center capture retargeted to ring");
   keyEvent(sample(800, 352, false, 11030), "ENC", 0);
   visual = MicroControls::visual();
@@ -193,24 +200,24 @@ void capturesNeverRetarget() {
   MicroControls::reset();
   keyEvent(sample(120, 150, true, 100), "AG00", 1);
   noEvents(sample(930, 610, true, 110), "key drag to another key");
-  noEvents(sample(802, 352, true, 120), "key drag to stick");
+  noEvents(sample(ControlLayout::StickX, 352, true, 120), "key drag to stick");
   noEvents(ring(0, 130), "key drag to ring");
   keyEvent(sample(1300, 750, false, 140), "AG00", 0);
 
   MicroControls::reset();
   noEvents(sample(1200, 400, true, 100), "blank capture");
   noEvents(sample(120, 150, true, 110), "blank drag to key");
-  noEvents(sample(802, 352, true, 120), "blank drag to stick");
+  noEvents(sample(ControlLayout::StickX, 352, true, 120), "blank drag to stick");
   noEvents(sample(0, 0, false, 130), "blank release");
 
   MicroControls::reset();
   noEvents(ring(0, 100), "ring capture");
   noEvents(sample(930, 610, true, 110), "ring drag to key");
-  noEvents(sample(802, 352, true, 120), "ring drag to stick");
+  noEvents(sample(ControlLayout::StickX, 352, true, 120), "ring drag to stick");
   noEvents(sample(0, 0, false, 130), "ring release after drag");
 
   MicroControls::reset();
-  joystickEvent(sample(802, 352, true, 100), 0, 0);
+  joystickEvent(sample(ControlLayout::StickX, 352, true, 100), 0, 0);
   auto events = sample(930, 610, true, 130);
   require(events.size() == 1 && events[0].joystick && !events[0].key,
           "stick drag retargeted to a key");
@@ -218,23 +225,41 @@ void capturesNeverRetarget() {
   joystickEvent(sample(0, 0, false, 140), 0, 0);
 }
 
+void trackedChatAreaNeverCapturesControls() {
+  // The center column is read-only. Moving the joystick must not leave its
+  // old hit target behind or allow a drag from a title to capture a control.
+  for (int x : {ControlLayout::ChatX, ControlLayout::ChatCenterX, 802,
+                ControlLayout::ChatX + ControlLayout::ChatWidth - 1}) {
+    for (int y : {ControlLayout::ChatY, ControlLayout::StickY,
+                  ControlLayout::ChatY + ControlLayout::ChatHeight - 1}) {
+      MicroControls::reset();
+      noEvents(sample(x, y, true, 100), "tracked chat touch");
+      noEvents(sample(ControlLayout::StickX, ControlLayout::StickY, true, 130),
+               "tracked chat drag stays inert");
+      noEvents(sample(0, 0, false, 160), "tracked chat release");
+    }
+  }
+}
+
 void joystickCardinalAnglesAndDistance() {
   struct Position { int x, y; float angle; };
-  const Position directions[] = {{92,0,0}, {0,92,.25f}, {-92,0,.5f}, {0,-92,.75f}};
+  constexpr int r = ControlLayout::StickRadius;
+  const Position directions[] = {{r,0,0}, {0,r,.25f}, {-r,0,.5f}, {0,-r,.75f}};
   for (const auto& direction : directions) {
     MicroControls::reset();
-    joystickEvent(sample(802, 352, true, 100), 0, 0);
+    joystickEvent(sample(ControlLayout::StickX, 352, true, 100), 0, 0);
     for (int quarter = 1; quarter <= 3; ++quarter) {
-      joystickEvent(sample(802 + direction.x * quarter / 4,
-                           352 + direction.y * quarter / 4, true, 100 + quarter * 30),
-                    direction.angle, quarter / 4.f);
+      const int dx = direction.x * quarter / 4, dy = direction.y * quarter / 4;
+      joystickEvent(sample(ControlLayout::StickX + dx,
+                           352 + dy, true, 100 + quarter * 30),
+                    direction.angle, std::hypot(float(dx),float(dy)) / r);
       const auto state = MicroControls::visual();
-      near(state.stickX, direction.x * quarter / (4.f * 92), "visual stick X");
-      near(state.stickY, direction.y * quarter / (4.f * 92), "visual stick Y");
+      near(state.stickX, float(dx) / r, "visual stick X");
+      near(state.stickY, float(dy) / r, "visual stick Y");
     }
-    joystickEvent(sample(802 + direction.x * 4, 352 + direction.y * 4, true, 260),
+    joystickEvent(sample(ControlLayout::StickX + direction.x * 4, 352 + direction.y * 4, true, 260),
                   direction.angle, 1);
-    noEvents(sample(802 + direction.x, 352 + direction.y, true, 265),
+    noEvents(sample(ControlLayout::StickX + direction.x, 352 + direction.y, true, 265),
              "normalized stick endpoint repeated");
     joystickEvent(sample(0, 0, false, 270), 0, 0);
     require(!MicroControls::visual().stickActive, "stick active after release");
@@ -243,33 +268,78 @@ void joystickCardinalAnglesAndDistance() {
 
 void joystickDeadzoneAndNoLatchedRepeats() {
   MicroControls::reset();
-  joystickEvent(sample(802, 352, true, 100), 0, 0);
+  joystickEvent(sample(ControlLayout::StickX, 352, true, 100), 0, 0);
   for (int i = 0; i < 100; ++i)
-    noEvents(sample(802 + (i % 3) - 1, 352 + (i % 5) - 2, true, 110 + i * 25),
+    noEvents(sample(ControlLayout::StickX + (i % 3) - 1, 352 + (i % 5) - 2, true, 110 + i * 25),
              "neutral deadzone jitter");
-  joystickEvent(sample(894, 352, true, 3000), 0, 1);
+  joystickEvent(sample((ControlLayout::StickX + ControlLayout::StickRadius), 352, true, 3000), 0, 1);
   for (int i = 0; i < 100; ++i)
-    noEvents(sample(894, 352, true, 3010 + i * 25), "stationary stick repeated");
-  joystickEvent(sample(802, 352, true, 5600), 0, 0);
-  noEvents(sample(802, 352, true, 5700), "neutral stick repeated");
-  joystickEvent(sample(894, 352, true, 5800), 0, 1);
+    noEvents(sample((ControlLayout::StickX + ControlLayout::StickRadius), 352, true, 3010 + i * 25), "stationary stick repeated");
+  joystickEvent(sample(ControlLayout::StickX, 352, true, 5600), 0, 0);
+  noEvents(sample(ControlLayout::StickX, 352, true, 5700), "neutral stick repeated");
+  joystickEvent(sample((ControlLayout::StickX + ControlLayout::StickRadius), 352, true, 5800), 0, 1);
   joystickEvent(sample(0, 0, false, 5900), 0, 0);
 }
 
 void joystickThresholdAndDirectionCrossings() {
   MicroControls::reset();
-  joystickEvent(sample(847, 352, true, 100), 0, 45.f/92);
+  constexpr int threshold = ControlLayout::StickRadius / 2;
+  constexpr int below = threshold - 1;
+  constexpr float belowDistance = float(below) / ControlLayout::StickRadius;
+  joystickEvent(sample(ControlLayout::StickX + below, 352, true, 100), 0, belowDistance);
   // Crossing the activation threshold must bypass both movement and time gates.
-  joystickEvent(sample(848, 352, true, 101), 0, .5f);
-  noEvents(sample(848, 352, true, 102), "threshold latch repeated");
-  joystickEvent(sample(847, 352, true, 103), 0, 45.f/92);
-  joystickEvent(sample(848, 352, true, 104), 0, .5f);
-  joystickEvent(sample(802, 398, true, 105), .25f, .5f);
-  noEvents(sample(802, 398, true, 106), "direction latch repeated");
-  joystickEvent(sample(756, 352, true, 107), .5f, .5f);
-  joystickEvent(sample(802, 306, true, 108), .75f, .5f);
-  joystickEvent(sample(848, 352, true, 109), 0, .5f);
+  joystickEvent(sample(ControlLayout::StickX + threshold, 352, true, 101), 0, .5f);
+  noEvents(sample(ControlLayout::StickX + threshold, 352, true, 102), "threshold latch repeated");
+  joystickEvent(sample(ControlLayout::StickX + below, 352, true, 103), 0, belowDistance);
+  joystickEvent(sample(ControlLayout::StickX + threshold, 352, true, 104), 0, .5f);
+  joystickEvent(sample(ControlLayout::StickX, 352 + threshold, true, 105), .25f, .5f);
+  noEvents(sample(ControlLayout::StickX, 352 + threshold, true, 106), "direction latch repeated");
+  joystickEvent(sample(ControlLayout::StickX - threshold, 352, true, 107), .5f, .5f);
+  joystickEvent(sample(ControlLayout::StickX, 352 - threshold, true, 108), .75f, .5f);
+  joystickEvent(sample(ControlLayout::StickX + threshold, 352, true, 109), 0, .5f);
   joystickEvent(sample(0, 0, false, 110), 0, 0);
+}
+
+void joystickArrowTargets() {
+  using D = MicroControls::StickDirection;
+  constexpr int arrow = ControlLayout::StickArrowRadius;
+  struct Target { int x, y; float angle; D direction; };
+  const Target targets[] = {{arrow,0,0,D::Right}, {0,arrow,.25f,D::Down},
+                            {-arrow,0,.5f,D::Left}, {0,-arrow,.75f,D::Up}};
+  for (const auto& target : targets) {
+    MicroControls::reset();
+    const int x = ControlLayout::StickX + target.x, y = ControlLayout::StickY + target.y;
+    joystickEvent(sample(x, y, true, 100), target.angle, float(arrow) / ControlLayout::StickRadius);
+    const auto visual = MicroControls::visual();
+    require(visual.stickActive, "arrow center must capture the joystick");
+    require(MicroControls::stickDirection(visual.stickX,visual.stickY) == target.direction,
+            "arrow center must activate its matching single direction");
+    joystickEvent(sample(x, y, false, 120), 0, 0);
+    require(!MicroControls::visual().stickActive, "arrow release must end the gesture");
+  }
+}
+
+void joystickDirectionClassification() {
+  using D = MicroControls::StickDirection;
+  require(MicroControls::stickDirection(0,0) == D::Neutral, "center must be neutral");
+  require(MicroControls::stickDirection(.499f,0) == D::Neutral, "subthreshold motion must remain unlit");
+  require(MicroControls::stickDirection(.5f,0) == D::Right, "threshold motion must activate right");
+  require(MicroControls::stickDirection(0,-.5f) == D::Up, "negative threshold must activate up");
+  struct Position { int x, y; D direction; };
+  const Position diagonals[] = {{60,59,D::Right}, {59,60,D::Down},
+      {60,60,D::Down}, {-60,60,D::Left}, {-60,-60,D::Up}, {60,-60,D::Right}};
+  for (const auto& diagonal : diagonals) {
+    MicroControls::reset();
+    auto events = sample(ControlLayout::StickX + diagonal.x,
+                         ControlLayout::StickY + diagonal.y, true, 100);
+    require(events.size() == 1 && events[0].joystick, "diagonal must send one analog sample");
+    const auto visual = MicroControls::visual();
+    require(MicroControls::stickDirection(visual.stickX,visual.stickY) == diagonal.direction,
+            "diagonal must select exactly one existing cardinal sector");
+    const auto wireDirection = static_cast<D>(int(std::floor((events[0].angle + .125f) * 4)) % 4);
+    require(wireDirection == diagonal.direction, "visual direction must match the emitted native angle");
+    joystickEvent(sample(0, 0, false, 120), 0, 0);
+  }
 }
 
 void cancellationReleasesAndClearsPendingTurns() {
@@ -283,13 +353,13 @@ void cancellationReleasesAndClearsPendingTurns() {
   keyEvent(sample(0, 0, false, 120), "AG00", 0);
 
   MicroControls::reset();
-  keyEvent(sample(244, 352, true, 100), "ENC", 1);
+  keyEvent(sample(ControlLayout::DialX, 352, true, 100), "ENC", 1);
   MicroControls::cancel();
   keyEvent(drain(), "ENC", 0);
   require(!MicroControls::visual().dialPressed, "cancel retained encoder press");
 
   MicroControls::reset();
-  joystickEvent(sample(894, 352, true, 100), 0, 1);
+  joystickEvent(sample((ControlLayout::StickX + ControlLayout::StickRadius), 352, true, 100), 0, 1);
   MicroControls::cancel();
   joystickEvent(drain(), 0, 0);
   require(!MicroControls::visual().stickActive, "cancel retained stick capture");
@@ -303,6 +373,117 @@ void cancellationReleasesAndClearsPendingTurns() {
   MicroControls::cancel();
   noEvents(drain(), "cancel must discard pending ring turns");
   require(!MicroControls::visual().dialTurning, "cancel retained ring capture");
+}
+
+void deferredActionsSubmitOnlyOnInsideRelease() {
+  // The bridge selects the slots by known current mapping, never by their
+  // default position. Exercise all slots so remapping keeps this contract.
+  const int targets[] = {103,265,427,589,761,931,1140};
+  for (int index = 0; index < 7; ++index) {
+    MicroControls::reset();
+    MicroControls::setReleaseActionMask(1 << index);
+    const std::string key = "ACT" + std::string(index < 4 ? "0" : "") + std::to_string(index + 6);
+    const int x = targets[index];
+    noEvents(sample(x, 617, true, 100), "deferred action initial touch");
+    require(MicroControls::visual().held >= 0, "pending action needs pressed feedback");
+    for (int elapsed : {20,500,1000,10000})
+      noEvents(sample(x, 617, true, 100 + elapsed), "deferred action must not repeat or submit while held");
+    // Repeating an unchanged policy must not cancel a legitimate gesture.
+    MicroControls::setReleaseActionMask(1 << index);
+    keyPair(sample(x, 617, false, 10200), key.c_str());
+    require(MicroControls::visual().held == -1, "submitted action left pressed feedback");
+    noEvents(sample(x, 617, false, 10210), "duplicate deferred release");
+  }
+}
+
+void deferredExitCancelsPermanently() {
+  for (const auto outside : {std::pair<int,int>{189,617}, {340,617}, {265,541}, {265,692}}) {
+    MicroControls::reset();
+    MicroControls::setReleaseActionMask(0x46); // known default Approve, Reject, Send
+    noEvents(sample(265, 617, true, 100), "approve start");
+    noEvents(sample(outside.first, outside.second, true, 110), "approve exit");
+    require(MicroControls::visual().held == -1, "exit must clear pending feedback immediately");
+    noEvents(sample(265, 617, true, 120), "reentry must not revive canceled action");
+    noEvents(sample(427, 617, true, 130), "canceled action cannot retarget reject");
+    noEvents(sample(265, 617, false, 140), "canceled action release");
+    noEvents(sample(265, 617, true, 150), "a new touch may arm again");
+    keyPair(sample(265, 617, false, 160), "ACT07");
+  }
+}
+
+void deferredOutsideReleaseAndCancellation() {
+  // Include direct outside release (no intermediate movement sample) and
+  // synthetic page/transport handoff release at 0,0.
+  for (const auto outside : {std::pair<int,int>{427,617}, {0,0}}) {
+    MicroControls::reset();
+    MicroControls::setReleaseActionMask(0x46);
+    noEvents(sample(265, 617, true, 100), "deferred start before outside release");
+    noEvents(sample(outside.first, outside.second, false, 120), "outside release must cancel");
+    require(MicroControls::visual().held == -1, "outside release retained pressed feedback");
+  }
+  for (int cancelMode = 0; cancelMode < 3; ++cancelMode) {
+    MicroControls::reset();
+    MicroControls::setReleaseActionMask(0x46);
+    noEvents(sample(265, 617, true, 100), "deferred start before policy invalidation");
+    if (cancelMode == 0) MicroControls::cancel();
+    else if (cancelMode == 1) MicroControls::cancelDeferredAction();
+    else MicroControls::setReleaseActionMask(0);
+    noEvents(drain(), "cancel/policy invalidation must never submit a deferred action");
+    require(MicroControls::visual().held == -1, "cancellation retained pressed feedback");
+    noEvents(sample(265, 617, false, 120), "release after policy invalidation");
+  }
+}
+
+void enabledSafetyPreservesNativeHoldTiming() {
+  struct Key { int x, y; const char* name; };
+  const Key keys[] = {{ControlLayout::DialX,352,"ENC"}, {761,617,"ACT10"},
+      {125,151,"AG00"}, {103,617,"ACT06"}, {589,617,"ACT09"}, {931,617,"ACT11"}};
+  for (const auto& key : keys) {
+    MicroControls::reset();
+    MicroControls::setReleaseActionMask(0x46);
+    keyEvent(sample(key.x, key.y, true, 1000), key.name, 1);
+    for (int elapsed : {20,499,500,1000,10000}) {
+      // Mapping/link freshness changes may cancel only deferred actions, never
+      // truncate an encoder, PTT, agent, fast, fork, or custom native hold.
+      MicroControls::cancelDeferredAction();
+      noEvents(drain(), "deferred cancellation altered a native hold");
+      noEvents(sample(key.x, key.y, true, 1000 + elapsed), "native hold repeated");
+    }
+    if (std::strcmp(key.name, "ENC") == 0)
+      require(MicroControls::visual().pressStarted == 1000, "encoder original hold time changed");
+    noEvents(sample(0, 0, true, 11100), "native hold canceled by sliding out");
+    keyEvent(sample(0, 0, false, 11200), key.name, 0);
+  }
+  // Learning a single-shot mapping after the native down was sent cannot
+  // transform that in-flight press into a delayed second click.
+  MicroControls::reset();
+  keyEvent(sample(265, 617, true, 100), "ACT07", 1);
+  MicroControls::setReleaseActionMask(0x46);
+  noEvents(sample(265, 617, true, 10000), "policy change repeated original native down");
+  keyEvent(sample(265, 617, false, 10100), "ACT07", 0);
+}
+
+void deferredPairHasAtomicQueueCapacity() {
+  MicroControls::reset();
+  MicroControls::setReleaseActionMask(0x46);
+  // Deliberately leave 31 queued native events; a deferred pair cannot fit.
+  for (int index = 0; index < 15; ++index) {
+    MicroControls::sample(125, 151, true, 100 + index * 20);
+    MicroControls::sample(125, 151, false, 110 + index * 20);
+  }
+  auto point = ringPoint(0);
+  MicroControls::sample(point.first, point.second, true, 500);
+  point = ringPoint(20);
+  MicroControls::sample(point.first, point.second, true, 520);
+  MicroControls::sample(0, 0, false, 540);
+  MicroControls::sample(265, 617, true, 600);
+  MicroControls::sample(265, 617, false, 620);
+  const auto events = drain();
+  require(events.size() == 31, "deferred pair must not partially fill a full queue");
+  for (const auto& event : events)
+    require(event.key && std::strcmp(event.key, "ACT07") != 0, "queue overflow emitted partial deferred press");
+  noEvents(sample(265, 617, true, 700), "deferred action recovers after queue drain");
+  keyPair(sample(265, 617, false, 720), "ACT07");
 }
 
 }  // namespace
@@ -336,10 +517,18 @@ int main() {
       {"expanded AG targets and inert gaps", expandedAgentTargetsKeepGapsInert},
       {"encoder press hold release", encoderPressAndHold},
       {"captured controls never retarget", capturesNeverRetarget},
+      {"tracked chat and old stick target stay inert", trackedChatAreaNeverCapturesControls},
       {"joystick cardinal angles and distance", joystickCardinalAnglesAndDistance},
       {"joystick deadzone and no repeats", joystickDeadzoneAndNoLatchedRepeats},
       {"joystick threshold and direction crossings", joystickThresholdAndDirectionCrossings},
+      {"joystick arrow touch targets", joystickArrowTargets},
+      {"joystick shared direction classification", joystickDirectionClassification},
       {"cancel release and neutral", cancellationReleasesAndClearsPendingTurns},
+      {"deferred actions submit on inside release", deferredActionsSubmitOnlyOnInsideRelease},
+      {"deferred exit permanently cancels", deferredExitCancelsPermanently},
+      {"deferred outside release and invalidation", deferredOutsideReleaseAndCancellation},
+      {"safety preserves native hold timing", enabledSafetyPreservesNativeHoldTiming},
+      {"deferred pair reserves both queue slots", deferredPairHasAtomicQueueCapacity},
   };
   int failures = 0;
   for (const auto& test : tests) {

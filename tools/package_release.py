@@ -149,11 +149,19 @@ def package(version: str, output: Path, firmware: Path, font: Path,
     if includes_ble and not screenshots:
         raise ValueError("USB/BLE releases must include current screenshots")
     screenshot_images = {}
+    screenshot_paths = {}
     for path in screenshots:
         name = "assets/" + path.name
         if name in screenshot_images:
             raise ValueError("Duplicate screenshot filename: " + path.name)
         screenshot_images[name] = screenshot_data(path)
+        try:
+            source_path = path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            # External capture files have no source-repository guide path.
+            pass
+        else:
+            screenshot_paths[source_path] = name
     guide_images = {"images/" + name: screenshot_data(root / "docs" / "images" / name)
                     for name in ("microphone-day.png", "microphone-night.png")} if includes_microphone else {}
     output = output.resolve()
@@ -178,6 +186,9 @@ def package(version: str, output: Path, firmware: Path, font: Path,
             sources.update({name: "docs/" + name for name in ("MICROPHONE.md", "MICROPHONE.en.md")})
         bundled_paths = {source: destination for destination, source in sources.items()}
         bundled_paths.update({"docs/" + name: name for name in guide_images})
+        # Explicit screenshots can live in docs/images rather than assets.
+        # Relocate their guide links to the actual copied files for offline use.
+        bundled_paths.update(screenshot_paths)
         for destination, source in sources.items():
             if includes_microphone and source.startswith("docs/") and destination.endswith(".md"):
                 (prepared / destination).write_text(release_instructions(

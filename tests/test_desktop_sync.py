@@ -104,6 +104,21 @@ class DesktopSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot.source, "unavailable")
         self.assertEqual(snapshot.tier, "unknown")
         self.assert_unknown_layout(snapshot)
+        self.assertEqual(snapshot.layout_source, "unavailable")
+        self.assertFalse(snapshot.layout_invalid)
+
+    def assert_native_layout_fallback(self, snapshot, layout, source="global-state"):
+        # The raw schema must still reject bad input; only the native
+        # normalizer chooses a complete default after that rejection.
+        self.assertEqual(desktop_sync._layout(layout),
+                         ("unknown", "unknown", UNKNOWN_ACTIONS, "unknown"))
+        self.assertEqual(snapshot.encoder, "composer-navigation")
+        self.assertEqual(snapshot.voice, "push-to-talk")
+        self.assertEqual(tuple(snapshot.actions), DEFAULT_ACTIONS)
+        self.assertEqual(snapshot.joystick_up, "plan")
+        self.assertEqual(snapshot.layout_source, source)
+        self.assertTrue(snapshot.layout_invalid)
+        self.assertEqual(snapshot.reason, "Desktop layout is invalid; using native defaults")
 
     def test_valid_empty_state_uses_desktop_layout_defaults_not_a_tier_guess(self):
         snapshot = self.snapshot()
@@ -112,6 +127,9 @@ class DesktopSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot.encoder, "composer-navigation")
         self.assertEqual(snapshot.voice, "push-to-talk")
         self.assertEqual(tuple(snapshot.actions), DEFAULT_ACTIONS)
+        self.assertEqual(snapshot.layout_source, "native-default")
+        self.assertFalse(snapshot.layout_invalid)
+        self.assertIsNone(snapshot.reason)
 
     def test_root_tiers_are_saved_defaults_and_missing_default_or_flex_stay_unknown(self):
         for raw, expected in (
@@ -184,8 +202,10 @@ class DesktopSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot.actions[0], "forward")
         self.assertEqual(snapshot.tier, "ultrafast")
 
-    def test_invalid_toml_layout_does_not_fall_back_but_preserves_independent_tier(self):
-        self.state[LAYOUT_KEY] = minimal_layout()
+    def test_invalid_toml_layout_uses_native_defaults_not_an_old_global_mapping(self):
+        old_layout = minimal_layout()
+        old_layout["slots"]["ACT06"]["commandId"] = "navigateBack"
+        self.state[LAYOUT_KEY] = old_layout
         for invalid in (False, "invalid", [], {}, {"version": 2}):
             with self.subTest(invalid=invalid):
                 self.write_config({"service_tier": "priority",
@@ -193,7 +213,44 @@ class DesktopSnapshotTests(unittest.TestCase):
                 snapshot = self.snapshot()
                 self.assertEqual(snapshot.source, "local-config")
                 self.assertEqual(snapshot.tier, "fast")
-                self.assert_unknown_layout(snapshot)
+                self.assert_native_layout_fallback(snapshot, invalid, "desktop-config")
+
+    def test_empty_encoder_object_falls_back_as_a_whole_like_native_desktop(self):
+        layout = minimal_layout()
+        layout.update(encoder={}, encoderMode="custom", voiceButtonMode="realtime")
+        layout["slots"]["ACT06"]["commandId"] = "navigateForward"
+        layout["analogStick"] = {
+            direction: {"type": "command", "commandId": "navigateBack"}
+            for direction in ("up", "right", "down", "left")
+        }
+        self.write_config({"desktop": {LAYOUT_KEY: layout}})
+        snapshot = self.snapshot()
+        self.assert_native_layout_fallback(snapshot, layout, "desktop-config")
+        summary = desktop_sync.summary(snapshot)
+        self.assertEqual((summary["layout_source"], summary["layout_invalid"]),
+                         ("desktop-config", True))
+        wire = json.loads(desktop_sync.encode_command(snapshot, 1)[len(b"HOST_CONFIG "):])
+        self.assertNotIn("layout_source", wire)
+        self.assertNotIn("layout_invalid", wire)
+
+    def test_valid_custom_and_null_mappings_do_not_trigger_native_fallback(self):
+        layout = minimal_layout()
+        layout.update(encoderMode="custom", voiceButtonMode="realtime")
+        layout["encoder"] = {gesture: None for gesture in ("left", "right", "click", "longPress")}
+        layout["analogStick"] = {direction: None for direction in ("up", "right", "down", "left")}
+        layout["slots"]["ACT06"]["action"] = {
+            "type": "skill", "skillName": PRIVATE, "skillPath": "/synthetic/" + PRIVATE,
+        }
+        layout["slots"]["ACT07"]["commandId"] = PRIVATE
+        self.state[LAYOUT_KEY] = layout
+        snapshot = self.snapshot()
+        self.assertEqual((snapshot.encoder, snapshot.voice), ("custom", "realtime"))
+        self.assertEqual(snapshot.actions[:3], ("custom", "unknown", "reject"))
+        self.assertEqual(snapshot.joystick_up, "unknown")
+        self.assertEqual(snapshot.layout_source, "global-state")
+        self.assertFalse(snapshot.layout_invalid)
+        self.assertIsNone(snapshot.reason)
+        self.assertNotIn(PRIVATE, json.dumps(desktop_sync.summary(snapshot)))
 
     def test_malformed_toml_clears_all_fields_even_when_global_layout_is_valid(self):
         self.state[LAYOUT_KEY] = minimal_layout()
@@ -205,6 +262,12 @@ class DesktopSnapshotTests(unittest.TestCase):
 
     def test_missing_both_sources_is_unavailable(self):
         self.state_path.unlink()
+        self.assert_unavailable(desktop_sync.build_snapshot(self.state_path))
+
+    def test_unreadable_config_is_unavailable_instead_of_native_default(self):
+        self.state[LAYOUT_KEY] = minimal_layout()
+        self.save_state()
+        self.config_path.mkdir()
         self.assert_unavailable(desktop_sync.build_snapshot(self.state_path))
 
     def test_bad_state_with_readable_toml_preserves_tier_but_not_layout_guess(self):
@@ -233,15 +296,15 @@ class DesktopSnapshotTests(unittest.TestCase):
                 self.state_path.write_bytes(content)
                 self.assert_unavailable(desktop_sync.build_snapshot(self.state_path))
 
-    def test_required_slots_missing_never_recover_plausible_default_actions(self):
+    def test_required_slots_missing_trigger_the_complete_native_fallback(self):
         for name in REQUIRED_SLOTS:
             with self.subTest(name=name):
                 layout = minimal_layout()
                 del layout["slots"][name]
                 self.state[LAYOUT_KEY] = layout
-                self.assert_unknown_layout(self.snapshot())
+                self.assert_native_layout_fallback(self.snapshot(), layout)
 
-    def test_layout_version_types_and_field_types_fail_closed(self):
+    def test_layout_version_types_and_field_types_use_native_fallback(self):
         cases = [("version", value) for value in (True, "1", 0, 2, None)]
         cases += [("slots", value) for value in (None, [], "slots")]
         cases += [("encoderMode", value) for value in (True, [], {}, "unknown", "bad")]
@@ -252,17 +315,17 @@ class DesktopSnapshotTests(unittest.TestCase):
                 layout = minimal_layout()
                 layout[field] = value
                 self.state[LAYOUT_KEY] = layout
-                self.assert_unknown_layout(self.snapshot())
+                self.assert_native_layout_fallback(self.snapshot(), layout)
 
-    def test_unhashable_or_invalid_slot_keycap_is_unavailable_not_an_exception(self):
+    def test_unhashable_or_invalid_slot_keycap_uses_native_fallback_not_an_exception(self):
         for value in ([], {}, ["FAST"], {"FAST": True}, None, True, 7, "NEW_UNKNOWN_KEYCAP"):
             with self.subTest(value=value):
                 layout = minimal_layout()
                 layout["slots"]["ACT06"]["keycapId"] = value
                 self.state[LAYOUT_KEY] = layout
-                self.assert_unknown_layout(self.snapshot())
+                self.assert_native_layout_fallback(self.snapshot(), layout)
 
-    def test_invalid_slot_shapes_command_types_and_actions_fail_closed(self):
+    def test_invalid_slot_shapes_command_types_and_actions_use_native_fallback(self):
         replacements = [None, [], "slot", {}, {"keycapId": "FAST", "commandId": []},
                         {"keycapId": "FAST", "commandId": {}},
                         {"keycapId": "FAST", "action": None},
@@ -275,7 +338,7 @@ class DesktopSnapshotTests(unittest.TestCase):
                 layout = minimal_layout()
                 layout["slots"]["ACT06"] = slot
                 self.state[LAYOUT_KEY] = layout
-                self.assert_unknown_layout(self.snapshot())
+                self.assert_native_layout_fallback(self.snapshot(), layout)
 
     def test_command_action_precedence_is_explicit_and_unknown_command_does_not_use_keycap(self):
         layout = minimal_layout()
@@ -351,7 +414,7 @@ class DesktopSnapshotTests(unittest.TestCase):
                 layout = minimal_layout()
                 layout[field] = mappings
                 self.state[LAYOUT_KEY] = layout
-                self.assert_unknown_layout(self.snapshot())
+                self.assert_native_layout_fallback(self.snapshot(), layout)
 
     def test_joystick_up_uses_the_verified_v1_default_when_analog_stick_is_absent(self):
         self.assertEqual(self.snapshot().joystick_up, "plan")
@@ -379,7 +442,7 @@ class DesktopSnapshotTests(unittest.TestCase):
                 self.assertNotIn(PRIVATE.encode(), command)
                 self.assertNotIn(PRIVATE, json.dumps(desktop_sync.summary(snapshot)))
 
-    def test_plan_up_is_unknown_if_any_part_of_the_layout_is_invalid(self):
+    def test_plan_up_uses_native_default_if_any_part_of_the_layout_is_invalid(self):
         valid_stick = {"up": {"type": "command", "commandId": "composer.togglePlanMode"},
                        "right": None, "down": None, "left": None}
         for invalid_part in ("up", "right", "encoder", "slots", "version"):
@@ -395,7 +458,7 @@ class DesktopSnapshotTests(unittest.TestCase):
                 else:
                     layout["version"] = 99
                 self.state[LAYOUT_KEY] = layout
-                self.assert_unknown_layout(self.snapshot())
+                self.assert_native_layout_fallback(self.snapshot(), layout)
 
     def test_joystick_up_respects_the_authoritative_toml_layout(self):
         global_layout = minimal_layout()
@@ -436,7 +499,7 @@ class DesktopSnapshotTests(unittest.TestCase):
         layout["slots"]["ACT06"]["keycapId"] = PRIVATE
         self.state[LAYOUT_KEY] = layout
         snapshot = self.snapshot()
-        self.assert_unknown_layout(snapshot)
+        self.assert_native_layout_fallback(snapshot, layout)
         self.assertNotIn(PRIVATE, json.dumps(desktop_sync.summary(snapshot)))
         self.assertNotIn(PRIVATE.encode(), desktop_sync.encode_command(snapshot, 1))
 

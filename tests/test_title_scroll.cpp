@@ -58,6 +58,63 @@ void longTitlesStayBoundedAndRepeat() {
   }
 }
 
+void fittingSingleLineStaysStill() {
+  require(TitleScroll::horizontalCycleMs(0)==0, "fitting single-line title has a cycle");
+  for (uint32_t time : {0u,2199u,2700u,999999u,0xFFFFFFFFu})
+    require(TitleScroll::horizontalOffsetAt(time,0)==0,
+            "fitting single-line title must not scroll");
+}
+
+void horizontalDwellAndReturn() {
+  struct Sample { uint32_t elapsed; uint16_t offset; };
+  const Sample samples[] = {
+      {0,0}, {2199,0}, {2200,0}, {2224,0}, {2225,1}, {2700,20},
+      {3199,39}, {3200,40}, {5399,40}, {5400,40}, {5424,40},
+      {5425,39}, {5900,20}, {6399,1}, {6400,0},
+  };
+  require(TitleScroll::horizontalCycleMs(40)==6400, "horizontal cycle changed");
+  for (const auto& sample : samples)
+    require(TitleScroll::horizontalOffsetAt(sample.elapsed,40)==sample.offset,
+            "horizontal dwell or return endpoint changed");
+}
+
+void horizontalTitlesRemainBoundedAndContinuous() {
+  for (uint16_t overflow : {uint16_t(1),uint16_t(17),uint16_t(900),uint16_t(65535)}) {
+    const uint32_t cycle=TitleScroll::horizontalCycleMs(overflow);
+    require(cycle==2*(2200+uint32_t(overflow)*25), "horizontal duration overflowed");
+    uint16_t previous=0;
+    for (uint32_t time=0;time<=cycle;++time) {
+      const uint16_t offset=TitleScroll::horizontalOffsetAt(time,overflow);
+      const unsigned distance=offset>previous ? offset-previous : previous-offset;
+      require(offset<=overflow && distance<=1,
+              "horizontal title escaped its mask or skipped pixels");
+      previous=offset;
+    }
+    for (uint32_t time : {0u,2199u,2700u,cycle/2,cycle-1})
+      require(TitleScroll::horizontalOffsetAt(time,overflow)
+                  ==TitleScroll::horizontalOffsetAt(time+cycle*1000,overflow),
+              "horizontal title changed after complete cycles");
+    require(TitleScroll::horizontalOffsetAt(0xFFFFFFFFu,overflow)<=overflow,
+            "large elapsed time escaped the horizontal mask");
+  }
+}
+
+void horizontalPauseResumesFromSamePixel() {
+  TitleScroll::Clock clock;
+  clock.reset();
+  clock.advance(2700,false);
+  require(TitleScroll::horizontalOffsetAt(clock.elapsed(),100)==20, "incorrect pause pixel");
+  clock.advance(2800,true);
+  clock.advance(9000,true);
+  clock.advance(10000,false);
+  clock.advance(11000,false);
+  require(TitleScroll::horizontalOffsetAt(clock.elapsed(),100)==20,
+          "touch pause or resume hold changed horizontal title position");
+  clock.advance(11025,false);
+  require(TitleScroll::horizontalOffsetAt(clock.elapsed(),100)==21,
+          "horizontal title failed to resume from held position");
+}
+
 void startupAndReset() {
   TitleScroll::Clock clock;
   require(clock.elapsed() == 0 && !clock.paused(), "new clock has nonzero state");
@@ -157,6 +214,10 @@ int main() {
       {"stationary titles", staticTitles},
       {"dwell and movement", dwellAndMovementBoundaries},
       {"long title cycles", longTitlesStayBoundedAndRepeat},
+      {"fitting single line", fittingSingleLineStaysStill},
+      {"horizontal dwell and return", horizontalDwellAndReturn},
+      {"bounded horizontal cycles", horizontalTitlesRemainBoundedAndContinuous},
+      {"horizontal touch pause", horizontalPauseResumesFromSamePixel},
       {"startup and reset", startupAndReset},
       {"pause mid-move", pauseMidMoveAndResumeHold},
       {"hold interval crossing", resumedIntervalCanCrossHold},
@@ -171,5 +232,5 @@ int main() {
       return 1;
     }
   }
-  std::cout << "9/9 title scroll tests passed\n";
+  std::cout << "13/13 title scroll tests passed\n";
 }

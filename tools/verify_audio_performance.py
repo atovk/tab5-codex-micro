@@ -14,14 +14,20 @@ from pathlib import Path
 import sys
 import time
 
+from control_layout import CURRENT as LAYOUT, FIRMWARE, VERSION
 from tab5_transport import open_serial
-from verify_feedback import FeedbackSession, check_safety, wait_saved
-from verify_neon import require
+from verify_feedback import FeedbackSession, wait_saved
+from verify_neon import check_safety as capture_safety, require
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIRMWARE = "tab5-micro-0.11.1"
 TEST_VOLUME = 22
+
+
+def check_safety(session: FeedbackSession, current: dict, baseline: dict,
+                 capture: bool = True) -> None:
+    require(current["firmware"] == FIRMWARE, "Unexpected firmware after reconnect")
+    capture_safety(current, baseline, session.events, capture=capture)
 
 
 def fast_touch(session: FeedbackSession, x: int, y: int, down: bool) -> None:
@@ -59,22 +65,22 @@ def run_phase(session: FeedbackSession, baseline: dict, name: str) -> dict:
     if name == "dial":
         for step in range(25):
             angle = math.tau * step / 24
-            fast_touch(session, round(244 + 96 * math.cos(angle)),
-                       round(352 + 96 * math.sin(angle)), True)
+            fast_touch(session, round(LAYOUT.dial_x + 96 * math.cos(angle)),
+                       round(LAYOUT.dial_y + 96 * math.sin(angle)), True)
             if step and step % 3 == 0:
                 test_sound(session, "CW")
                 sounds += 1
-        fast_touch(session, 340, 352, False)
+        fast_touch(session, LAYOUT.dial_x + 96, LAYOUT.dial_y, False)
     elif name == "joystick":
-        fast_touch(session, 802, 352, True)
+        fast_touch(session, LAYOUT.stick_x, LAYOUT.stick_y, True)
         for step in range(25):
             angle = math.tau * step / 24
-            fast_touch(session, round(802 + 80 * math.cos(angle)),
-                       round(352 + 80 * math.sin(angle)), True)
+            fast_touch(session, round(LAYOUT.stick_x + 80 * math.cos(angle)),
+                       round(LAYOUT.stick_y + 80 * math.sin(angle)), True)
             if step and step % 3 == 0:
                 test_sound(session, "DIRECTION")
                 sounds += 1
-        fast_touch(session, 882, 352, False)
+        fast_touch(session, LAYOUT.stick_x + 80, LAYOUT.stick_y, False)
     else:
         raise ValueError(f"Unknown control phase: {name}")
     loop_seconds = time.monotonic() - started_at
@@ -226,7 +232,7 @@ def verify(output: Path, port: str | None = None, timeout: float = 10,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, nargs="?",
-                        default=ROOT / "artifacts/audio-performance-qa-0.11.1.json")
+                        default=ROOT / f"artifacts/audio-performance-qa-{VERSION}.json")
     parser.add_argument("--port")
     parser.add_argument("--timeout", type=float, default=10)
     parser.add_argument("--max-render-us", type=int)

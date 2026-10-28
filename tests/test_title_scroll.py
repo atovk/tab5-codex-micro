@@ -26,7 +26,7 @@ class TitleScrollTests(unittest.TestCase):
                 [str(binary)], text=True, capture_output=True, timeout=10,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("9/9 title scroll tests passed", result.stdout)
+            self.assertIn("13/13 title scroll tests passed", result.stdout)
 
 
 if __name__ == "__main__":

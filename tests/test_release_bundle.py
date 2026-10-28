@@ -288,6 +288,46 @@ class ReleaseFixture(unittest.TestCase):
             packaging.package("0.13.0", self.root / "bad-image", self.firmware, self.font,
                               root=self.source, screenshots=[explicit])
 
+    def test_explicit_console_screenshots_keep_bilingual_flashing_navigation_offline(self):
+        self.prepare_microphone_release()
+        self.firmware.write_bytes(firmware_fixture("0.13.1"))
+        screenshots = [self.source / "docs/images" / f"tab5-0.13.1-{theme}-en.png"
+                       for theme in ("light", "dark")]
+        for path in screenshots:
+            path.write_bytes(screenshot_fixture())
+        for language in ("", ".en"):
+            # Use the actual published guide structure, including links to
+            # the current screenshots from both languages.
+            guide = f"FLASHING{language}.md"
+            shutil.copyfile(ROOT / "docs" / guide, self.source / "docs" / guide)
+        bundle, archive_path = packaging.package(
+            "0.13.1", self.root / "console-bundle", self.firmware, self.font,
+            root=self.source, screenshots=screenshots)
+        expected_previews = {"assets/" + path.name for path in screenshots}
+        manifest = json.loads((bundle / "manifest.json").read_text())
+        self.assertEqual(set(manifest["screenshots"]), expected_previews)
+        with ZipFile(archive_path) as archive:
+            for language in ("", ".en"):
+                guide = f"FLASHING{language}.md"
+                text = archive.read("console-bundle/" + guide).decode("utf-8")
+                for preview in expected_previews:
+                    self.assertIn(f"({preview})", text)
+                    self.assertIn("console-bundle/" + preview, archive.namelist())
+                    self.assertEqual(archive.read("console-bundle/" + preview), screenshot_fixture())
+                self.assertIn("(FLASHING" + (".en" if not language else "") + ".md)", text)
+                for target in re.findall(r"!?\[[^\]\n]*\]\(([^)\s]+)\)", text):
+                    parsed = urlsplit(target)
+                    if not parsed.scheme and parsed.path:
+                        self.assertIn("console-bundle/" + parsed.path, archive.namelist(),
+                                      f"Broken offline link in {guide}: {target}")
+                self.assertNotIn("/blob/v0.13.1/docs/images/tab5-0.13.1-", text)
+        # Guide rewrites and copied screenshots are all covered by the bundle's
+        # standalone check; neither source checkout nor network is required.
+        result = subprocess.run([sys.executable, "-S", str(bundle / "flash.py"), "--check"],
+                                cwd=self.root, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Release 0.13.1 verified", result.stdout)
+
     def test_explicit_screenshot_inputs_validate_format_and_reject_filename_collision(self):
         screenshot = self.root / "custom.png"
         screenshot.write_bytes(b"not a screenshot")

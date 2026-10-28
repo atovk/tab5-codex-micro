@@ -69,6 +69,8 @@ class DesktopSnapshot:
     reason: str | None = None
     chat: chat_sync.ChatSnapshot | None = None
     joystick_up: str = "unknown"
+    layout_source: str = "unavailable"
+    layout_invalid: bool = False
 
 
 def unavailable(reason: str | None = None) -> DesktopSnapshot:
@@ -130,7 +132,7 @@ def _slot_action(slot: dict) -> str:
 
 
 def _layout(layout: object) -> tuple[str, str, tuple[str, ...], str]:
-    """Mirror the desktop v1 schema without silently repairing invalid input."""
+    """Validate the desktop v1 schema before applying its whole-layout fallback."""
     unknown = ("unknown", "unknown", UNKNOWN_ACTIONS, "unknown")
     if not isinstance(layout, dict) or type(layout.get("version")) is not int or layout["version"] != 1:
         return unknown
@@ -155,8 +157,8 @@ def _layout(layout: object) -> tuple[str, str, tuple[str, ...], str]:
     if not isinstance(voice, str) or voice not in VOICES - {"unknown"} or not isinstance(separate, bool):
         return unknown
     # Only the bounded Up/Plan fact is exported, never custom mappings. Invalid
-    # mappings invalidate the desktop's whole v1 layout rather than selecting
-    # a plausible default.
+    # mappings invalidate the desktop's whole v1 layout. The native normalizer
+    # then uses its complete default, never a partly repaired custom mapping.
     for key, directions in (("analogStick", ("up", "right", "down", "left")),
                             ("encoder", ("left", "right", "click", "longPress"))):
         if key not in layout:
@@ -203,20 +205,31 @@ def build_snapshot(state_path: Path, config_path: Path | None = None) -> Desktop
     desktop = config.get("desktop", {})
     reason = None
     joystick_up = "unknown"
+    layout_source = "unavailable"
+    layout_invalid = False
     if not isinstance(desktop, dict):
         encoder, voice, actions = "unknown", "unknown", UNKNOWN_ACTIONS
         reason = "Desktop layout is unavailable or invalid"
     elif LAYOUT_KEY in desktop:
         encoder, voice, actions, joystick_up = _layout(desktop[LAYOUT_KEY])
+        layout_source = "desktop-config"
     elif state is None:
         encoder, voice, actions = "unknown", "unknown", UNKNOWN_ACTIONS
         reason = "Desktop layout is unavailable or invalid"
     else:
         encoder, voice, actions, joystick_up = _layout(state.get(LAYOUT_KEY, DEFAULT_LAYOUT))
-    if encoder == "unknown" and reason is None:
-        reason = "Desktop layout is unavailable or invalid"
+        layout_source = "global-state" if LAYOUT_KEY in state else "native-default"
+    if encoder == "unknown" and layout_source != "unavailable":
+        # Installed codex-micro-layout normalizes with schema.safeParse(value)
+        # .data ?? DEFAULT_LAYOUT. In particular, TOML may persist encoder:{}
+        # instead of the schema's four nullable gesture values. Match the
+        # native full fallback, without using an older global/custom layout.
+        encoder, voice, actions, joystick_up = _layout(DEFAULT_LAYOUT)
+        layout_invalid = True
+        reason = "Desktop layout is invalid; using native defaults"
     return DesktopSnapshot("local-config", _tier(config), encoder, voice, actions, reason,
-                           joystick_up=joystick_up)
+                           joystick_up=joystick_up, layout_source=layout_source,
+                           layout_invalid=layout_invalid)
 
 
 def encode_command(snapshot: DesktopSnapshot, seq: int) -> bytes:
@@ -248,6 +261,7 @@ def summary(snapshot: DesktopSnapshot) -> dict:
     result = {"source": snapshot.source, "scope": "configuration-defaults", "tier": snapshot.tier,
               "encoder": snapshot.encoder, "voice": snapshot.voice, "actions": list(snapshot.actions),
               "joystick_up": snapshot.joystick_up,
+              "layout_source": snapshot.layout_source, "layout_invalid": snapshot.layout_invalid,
               "known_actions": sum(v != "unknown" for v in snapshot.actions),
               "command_bytes": len(encode_command(snapshot, 1))}
     if snapshot.reason:

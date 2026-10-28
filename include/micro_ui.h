@@ -40,6 +40,9 @@ struct State {
   bool titlesFresh = false;
   uint32_t rpc_count = 0;
   bool lightingPreview = false;
+  // Last native Agent slot whose press was submitted. Dynamic recent slots
+  // have no exported identity; this is not an acknowledged desktop selection.
+  int8_t selectedAgent = -1;
   HostFeedback::Config hostConfig;
   HostFeedback::Chat hostChat;
   HostFeedback::Lights hostLights;
@@ -78,7 +81,9 @@ bool setTitleScrollTest(uint8_t slot, uint32_t now);
 void clearTitleScrollTest();
 
 bool init();
-bool render(const State& state);
+bool render(const State& state, bool diagnosticInput = false);
+// Refresh cancellation policy before sampling input; independent of frame pacing.
+void syncInputPolicy(const State& state);
 // Diagnostic evidence for the retained framebuffer; never the mutable model.
 const State& renderedState();
 // Present the complete retained scene again after display orientation changes.

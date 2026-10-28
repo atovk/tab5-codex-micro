@@ -25,6 +25,7 @@ import desktop_sync
 import chat_sync
 
 PLANS = ("fast", "dial", "plan")
+DEFAULT_FIRMWARE = "tab5-micro-0.13.1"
 DEFAULT_STICK = {
     "up": {"type": "command", "commandId": "composer.togglePlanMode"},
     "right": {"type": "command", "commandId": "navigateForward"},
@@ -38,14 +39,34 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def firmware_name(version: str) -> str:
+    """Pin one exact firmware ID, never a prefix, range or wildcard."""
+    if not isinstance(version, str):
+        raise ValueError("Firmware must be an exact version such as 0.13.0")
+    version = version.removeprefix("tab5-micro-")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ValueError("Firmware must be an exact version such as 0.13.0")
+    return "tab5-micro-" + version
+
+
 def mapping_summary(state_path: Path, config_path: Path, plan: str) -> dict:
     require(plan in PLANS, "Unknown native diagnostic plan")
     state = json.loads(state_path.read_text())
     config = tomllib.loads(config_path.read_text())
     require(isinstance(state, dict) and isinstance(config.get("desktop", {}), dict), "Invalid desktop configuration")
-    layout = config.get("desktop", {}).get(desktop_sync.LAYOUT_KEY,
-               state.get(desktop_sync.LAYOUT_KEY, desktop_sync.DEFAULT_LAYOUT))
-    encoder, _voice, actions, _joystick_up = desktop_sync._layout(layout)
+    desktop = config.get("desktop", {})
+    raw_layout = desktop.get(desktop_sync.LAYOUT_KEY,
+                  state.get(desktop_sync.LAYOUT_KEY, desktop_sync.DEFAULT_LAYOUT))
+    source = ("desktop-config" if desktop_sync.LAYOUT_KEY in desktop else
+              "global-state" if desktop_sync.LAYOUT_KEY in state else "native-default")
+    encoder, _voice, actions, _joystick_up = desktop_sync._layout(raw_layout)
+    invalid = encoder == "unknown"
+    # Native schema.safeParse(raw).data ?? DEFAULT_LAYOUT discards the whole
+    # invalid layout. Keep its raw fingerprint so even two invalid mappings
+    # with identical effective defaults cannot change unnoticed during a test.
+    layout = desktop_sync.DEFAULT_LAYOUT if invalid else raw_layout
+    if invalid:
+        encoder, _voice, actions, _joystick_up = desktop_sync._layout(layout)
     require(encoder != "unknown" and "unknown" not in actions, "Desktop mapping is incomplete or invalid")
     require(encoder != "custom" and "custom" not in actions, "Custom native mappings are excluded from this test")
     stick = layout.get("analogStick", DEFAULT_STICK)
@@ -60,8 +81,9 @@ def mapping_summary(state_path: Path, config_path: Path, plan: str) -> dict:
     else:
         require(plan_up, "Joystick Up must map exactly to composer.togglePlanMode")
     # Persist only bounded semantic fields and a fingerprint, never custom text.
-    normalized = {"encoder": encoder, "actions": list(actions), "joystick_up": "plan" if plan_up else "unknown"}
-    normalized["fingerprint"] = hashlib.sha256(json.dumps(layout, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    normalized = {"encoder": encoder, "actions": list(actions), "joystick_up": "plan" if plan_up else "unknown",
+                  "layout_source": source, "layout_invalid": invalid}
+    normalized["fingerprint"] = hashlib.sha256(json.dumps(raw_layout, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return normalized
 
 
@@ -253,7 +275,8 @@ def device_projection(value: dict) -> dict:
 
 
 def check_device(value: dict, args):
-    require(value.get("firmware") == "tab5-micro-0.12.0", "Expected firmware tab5-micro-0.12.0")
+    expected_firmware = firmware_name(getattr(args, "firmware", DEFAULT_FIRMWARE))
+    require(value.get("firmware") == expected_firmware, f"Expected firmware {expected_firmware}")
     require(value.get("active_transport") == "usb", "USB must own native input before the test")
     require(not value.get("input_capture") and not value.get("lighting_preview"), "Another diagnostic capture owns input")
     bt = value.get("bluetooth", {})
@@ -277,6 +300,7 @@ def check_device(value: dict, args):
 
 def preflight(args) -> dict:
     result = {"plan": args.plan, "execute_requested": args.execute,
+              "expected_firmware": firmware_name(getattr(args, "firmware", DEFAULT_FIRMWARE)),
               "target_hash": hashlib.sha256(args.thread_id.encode()).hexdigest()[:12],
               "active_target": "operator-asserted" if args.confirm_target_active else "not-confirmed",
               "scope": "No settings IPC writes; queued, submitted and desktop effects are separate", "checks": {}, "errors": []}
@@ -391,6 +415,8 @@ def arguments(argv=None):
     parser.add_argument("--confirm-target-active", action="store_true")
     parser.add_argument("--execute", action="store_true", help="Actually arm one native BLE plan and USB_PAUSE; default is dry-run")
     parser.add_argument("--port")
+    parser.add_argument("--firmware", type=firmware_name, default=DEFAULT_FIRMWARE,
+                        help="Exact expected firmware version or ID (default: %(default)s)")
     parser.add_argument("--delay-ms", type=int, default=15000)
     parser.add_argument("--pause-seconds", type=int, default=35)
     parser.add_argument("--timeout", type=float, default=8)
