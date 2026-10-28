@@ -4,13 +4,13 @@
 
 Turn **M5Stack Tab5** into a touch controller for Codex. It preserves Micro's dial, joystick, and key interactions, and adds chat metadata, two themes, sound, and games to the 5-inch 1280×720 touchscreen.
 
-This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Latest published version: **0.11.1**. The source checkout is developing **0.12.0 USB/Bluetooth support**; hardware validation is ongoing and it is not released. The 0.11.1 download below supports USB only.
+This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Latest version: **0.12.0 with USB/Bluetooth support**. Hardware validation scope and known limits are described below.
 
 ## Download and flash
 
-Open the [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1), download **`tab5-codex-micro-0.11.1.zip`**, and extract the entire archive. It includes compiled firmware, the title font, a flashing helper, checksums, and Chinese/English instructions. **No PlatformIO installation or compilation is required.**
+Open the [0.12.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0), download **`tab5-codex-micro-0.12.0.zip`**, and extract the entire archive. It includes compiled firmware, the title font, a flashing helper, checksums, and Chinese/English instructions. **No PlatformIO installation or compilation is required.**
 
-You need Python **3.11+**, a USB-C data cable, and an ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. The commands below target macOS/Linux; the Windows flashing workflow has not been verified.
+You need Python **3.11+**, a USB-C data cable, and an ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. The flashing helper supports macOS/Linux. Windows supports offline `--check` only; flashing is not supported.
 
 Run inside the extracted directory:
 
@@ -24,19 +24,19 @@ python3 -m venv .venv
 
 Replace the example with the actual Tab5 port from the list; Linux commonly uses `/dev/ttyACM0`. The helper validates the files, enters download mode, writes the firmware and font, and restarts the device. For an initial flash from factory firmware, hold Tab5 Reset for about two seconds until the internal green LED flashes rapidly, release it, then select its P4 download port. Do not flash an ESP32-S3 device.
 
-See the [flashing guide](docs/FLASHING.en.md) for full steps, addresses, updates, and troubleshooting. Flashing replaces existing firmware and resets this project's theme, volume, brightness, and language preferences. Back up flash first if you want to retain the factory system.
+See the [flashing guide](docs/FLASHING.en.md) for full steps, addresses, updates, and troubleshooting. The default full flash replaces existing firmware and resets this project's bonds, theme, volume, brightness, and language preferences. Back up flash first if you want to retain the factory system. The firmware uses compatible firmware already on Tab5's onboard C6; you do not need to flash the C6 separately or flash other connected development boards.
 
 ## Interface preview
 
-These English UI previews are captured from the 0.11.1 Tab5 framebuffer. Chat titles and states use isolated demonstration data. Switch between Chinese and English in device settings. Tracked chat settings appear in a separate read-only strip, as described below.
+These are real 0.12.0 Tab5 framebuffer captures with an English interface and example content. Chat titles and states use isolated demonstration data. They show the interface and are not evidence that native actions executed on the desktop. Switch between Chinese and English in device settings. Tracked chat settings appear in a separate read-only strip, as described below.
 
 | Day | Night |
 | --- | --- |
-| ![English day console](docs/images/day.png) | ![English night console](docs/images/night.png) |
+| ![English day console](assets/tab5-light-0.12.0.png) | ![English night console](assets/tab5-dark-0.12.0.png) |
 
 ## Features
 
-- **USB/Bluetooth support (0.12.0 in development):** native keys, dial, joystick, and lighting can use USB HID or BLE HID. Device settings provide a pairing PIN, saved bonds, and reconnection. Bluetooth Fast/Plan desktop changes and metadata synchronization have been verified on hardware; validation limits are described below.
+- **USB/Bluetooth support:** native keys, dial, joystick, and lighting can use USB HID or BLE HID. Device settings provide a pairing PIN, saved bonds, and reconnection. Bluetooth Fast/Plan desktop changes and metadata synchronization have been verified on hardware; validation limits are described below.
 - **Native Micro interactions:** rotate around the dial's outer ring; tap or hold its center. The joystick sends continuous direction and distance and returns to center on release. The desktop app applies its Micro mappings.
 - **Chat keys:** six Agent keys show host lighting states and animated activity borders. A local companion can add titles for explicitly assigned chats.
 - **Two-line titles:** Chinese and English wrap at the normal font size. Longer titles scroll slowly in a loop, pause during touch, and resume after release.
@@ -48,7 +48,7 @@ These English UI previews are captured from the 0.11.1 Tab5 framebuffer. Chat ti
 
 ## Everyday controls
 
-Connect USB-C, or pair Bluetooth on the 0.12.0 development firmware using the steps below. Configure keys, dial behavior, and voice in **Settings → Codex Micro** in the Codex desktop app.
+Connect USB-C, or pair Bluetooth using the steps below. Configure keys, dial behavior, and voice in **Settings → Codex Micro** in the Codex desktop app.
 
 | Gesture | Behavior |
 | --- | --- |
@@ -58,7 +58,7 @@ Connect USB-C, or pair Bluetooth on the 0.12.0 development firmware using the st
 | Tap an Agent key | Trigger its corresponding desktop chat shortcut |
 | Hold/release a command key | Preserve native press/release, including push-to-talk mappings |
 | Sun/moon at the top right | Switch and save the theme |
-| Gear at the top right | Volume, mute, brightness, and language; the development build adds Connections |
+| Gear at the top right | Volume, mute, brightness, language, and Connections |
 | Games at the top right | Open the local game library |
 
 Fast/Plan/Approve retain their native desktop behavior; they do not establish that the action targets the chat in the settings strip. The interface explicitly says **Target not verified**. A brief **USB not sent** or **BLE not sent** receipt means submission failed or the queue rejected the event, with no promise of later delivery. **USB submitted** or **BLE submitted** only means that the corresponding transport stack accepted the complete message; it does not acknowledge desktop execution.
@@ -67,9 +67,9 @@ The header distinguishes USB and Bluetooth connections; **Last** lighting descri
 
 The desktop settings determine the final behavior of dial modes, command keys, joystick actions, and voice. Default voice input uses the **computer microphone**, not the Tab5 microphone. The auxiliary key may be unassigned until separate microphone keys are enabled and configured on the desktop.
 
-## Bluetooth pairing and reconnection (in development)
+## Bluetooth pairing and reconnection
 
-These steps describe the unreleased 0.12.0 implementation. Hardware tests have verified PIN pairing, reconnection after application updates that preserve bonds, and desktop Fast/Standard and Default/Plan changes followed by restoration with only Bluetooth connected. Clockwise and counterclockwise dial events triggered desktop navigation highlighting, confirmed through native blue lighting feedback and four Tab5 frames. Metadata stress tests, automatic USB/BLE switching in both the foreground companion and installed login service, and native/metadata recovery after turning Tab5 Bluetooth off and on have also passed. Specific DOM focus, control identity, battery runtime, computer Bluetooth toggling, and long sleep remain unconfirmed. See the [Bluetooth guide](docs/BLUETOOTH.en.md) for setup and evidence by test case.
+Hardware tests for 0.12.0 have verified PIN pairing, reconnection after application updates that preserve bonds, and desktop Fast/Standard and Default/Plan changes followed by restoration with only Bluetooth connected. Clockwise and counterclockwise dial events triggered desktop navigation highlighting, confirmed through native blue lighting feedback and four Tab5 frames. Metadata stress tests, automatic USB/BLE switching in both the foreground companion and installed login service, and native/metadata recovery after turning Tab5 Bluetooth off and on have also passed. Specific DOM focus, control identity, battery runtime, computer Bluetooth toggling, and long sleep remain unconfirmed. See the [Bluetooth guide](docs/BLUETOOTH.en.md) for setup and evidence by test case.
 
 1. On Tab5, open **Gear → Connections**, turn Bluetooth on, and tap **Start pairing**. The window for pairing a new computer lasts two minutes.
 2. In the computer's Bluetooth settings, select the name shown on Tab5 (`Tab5 Micro` followed by four characters). Immediately enter the **six-digit PIN displayed on Tab5**, including leading zeroes. macOS may show a standalone pairing dialog. The SMP transaction times out after about 30 seconds; the two-minute admission window does not extend it. The PIN is not a fixed default password. After a timeout, close the old prompt and restart pairing.
@@ -80,10 +80,10 @@ To change computers or repair a stale bond, tap **Forget pairing** on Tab5 and c
 
 ## Optional: chat titles and settings bridge
 
-Native Micro HID lighting messages contain neither chat titles nor the current chat's Fast/Plan/permission text. Two local processes supplement this metadata while native USB/BLE HID handles input and lighting. The companion bridge currently targets **macOS** and requires the source repository and its Python dependencies; it is not required merely to flash the downloaded bundle. Wireless metadata in the development build uses a separate encrypted GATT service. A native Bluetooth connection alone does not supply titles or chat settings.
+Native Micro HID lighting messages contain neither chat titles nor the current chat's Fast/Plan/permission text. Two local processes supplement this metadata while native USB/BLE HID handles input and lighting. The companion bridge currently targets **macOS** and requires the source repository and its Python dependencies; it is not required merely to flash the downloaded bundle. Wireless metadata uses a separate encrypted GATT service. A native Bluetooth connection alone does not supply titles or chat settings.
 
 ```sh
-git clone https://github.com/atovk/tab5-codex-micro.git
+git clone --branch v0.12.0 https://github.com/atovk/tab5-codex-micro.git
 cd tab5-codex-micro
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
@@ -158,7 +158,7 @@ After preparing the source checkout and Python environment above:
 
 The source flashing helper validates the complete firmware version and P4 image layout, then reads the selected chip's base MAC before writing. It checks identity continuity when moving from the application into ROM. After restart, the same chip's application serial must return an exact matching `STATUS` firmware version; another connected Tab5 cannot satisfy verification. Release-bundle validation also requires an exact version and rejects RC or longer version strings mislabeled as the stable release.
 
-Development primarily targets macOS and requires Git and a working C++ compiler. Toolchains are isolated in `.pio-core/`; the first font generation needs internet access. Include the complete title font on the first flash. Later, `tools/flash.py --port PORT` can update firmware while retaining the font; factory-image updates still reset local preferences.
+Development primarily targets macOS and requires Git and a working C++ compiler. Toolchains are isolated in `.pio-core/`; the first font generation needs internet access. Include the complete title font on the first flash. A default factory update resets bonds and preferences even when the font is retained. Source updates with `tools/flash.py --port PORT --app-only` preserve NVS, bonds, preferences, and the font only when this project's compatible partition layout and a valid title font are already installed and no migration is required. See the [flashing guide](docs/FLASHING.en.md#later-updates).
 
 | Component | Pinned version |
 | --- | --- |
@@ -178,18 +178,18 @@ Development primarily targets macOS and requires Git and a working C++ compiler.
 
 `hid-status` only requests state; it does not trigger keys. Input, metadata, fonts, and scrolling have host-side logic tests. Device tools cover touch, pixel restoration, sound, and themes. The new `tools/verify_transition_performance.py` measures theme, language, settings, and game-page transitions plus initial title-cache construction. It isolates native inputs and reads metrics after each completed transition, without treating command acknowledgement time as complete render time. See the [development notes](docs/development.en.md) for architecture, protocol boundaries, and validation methods.
 
-Current 0.12.0 source passed **337 host tests**, built successfully, and was flashed to hardware. Final four-frame Bluetooth dial verification passed. The maximum gap between input services during chunked capture was **1.168ms**; the independent BLE test window recorded a maximum input-sampling interval of **16.253ms**. See the development notes for measurement scope and details. This version remains unreleased.
+The 0.12.0 firmware hardware-validation baseline passed **337 host tests**, built successfully, and was flashed to hardware. Final four-frame Bluetooth dial verification passed. The maximum gap between input services during chunked capture was **1.168ms**; the independent BLE test window recorded a maximum input-sampling interval of **16.253ms**. Release preparation, including packaging regressions, passed all **341 host tests in 50.550 seconds**. See the development notes for measurement scope and details.
 
 ## Current limits
 
 - This third-party protocol implementation may be affected by desktop updates. Incompatible state interfaces or expired metadata show unknown rather than substituting saved defaults for real state.
-- The 0.12.0 dual-transport implementation is unreleased. See the [Bluetooth guide](docs/BLUETOOTH.en.md) for verified cases and remaining acceptance checks. Controlled Fast/Plan, dial navigation highlight, and blue lighting tests do not establish every mapping, specific DOM focus, or other lighting colors. Existing 0.11.1 screenshots and historical results are not Bluetooth evidence.
+- See the [Bluetooth guide](docs/BLUETOOTH.en.md) for verified cases and unconfirmed scenarios. Controlled Fast/Plan, dial navigation highlight, and blue lighting tests do not establish every mapping, specific DOM focus, or other lighting colors. Interface presentation screenshots and historical USB results are not Bluetooth execution evidence.
 - Live settings follow one designated local chat. Agent titles require saved Custom assignments. Automatic following of desktop selection, remote chats, and reliable title matching for dynamic recent lists are not implemented.
 - The settings strip describes the **designated chat's next send**, not a running turn or the current target of native buttons. USB/BLE submission, a historical native session, and fresh bridge data cannot independently prove desktop execution.
 - Activity labels are inferred from desktop lighting colors; custom colors may affect them. Custom input mappings remain controlled by the desktop.
 - Titles use the BMP coverage of Noto Sans SC. Unsupported characters, including some emoji, are replaced individually. Each title is limited to **191 UTF-8 bytes**; received text beyond two lines scrolls. Changing UI language does not translate chat titles.
 - Automatic rotation supports two landscape orientations, with no portrait layout.
-- Current source enables the onboard C6 as the BLE controller while keeping battery charging and external power outputs disabled. It does not charge the battery while running. C6/ESP-Hosted firmware compatibility remains part of hardware validation.
+- The firmware enables the onboard C6 as the BLE controller using compatible C6/ESP-Hosted firmware already on the tested Tab5. Other C6 firmware combinations are unverified. Battery charging and external power outputs remain disabled; the device does not charge the battery while running.
 
 ## License and references
 

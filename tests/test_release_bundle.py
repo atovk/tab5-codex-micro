@@ -42,6 +42,13 @@ def firmware_fixture(version="0.11.0", *, terminated=True):
     return bytes(data)
 
 
+def screenshot_fixture():
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">2I5B", 1, 1, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"\0\x30\x4f\xfe")) + chunk(b"IEND", b""))
+
+
 def port(name, pid=flash.APP_PID, serial_number="TAB5-0123456789AB", location="1-2"):
     return SimpleNamespace(device=name, vid=flash.VID, pid=pid, serial_number=serial_number,
                            description="Synthetic device", location=location)
@@ -66,6 +73,20 @@ class ReleaseFixture(unittest.TestCase):
         self.font.write_bytes(font_fixture())
         self.bundle, self.archive = packaging.package("0.11.0", self.root / "bundle", self.firmware,
                                                        self.font, "a" * 40, self.source)
+
+    def prepare_ble_release(self):
+        (self.source / "assets").mkdir()
+        for theme in ("light", "dark"):
+            (self.source / "assets" / f"tab5-{theme}-0.12.0.png").write_bytes(screenshot_fixture())
+        for name in ("BLUETOOTH.md", "BLUETOOTH.en.md"):
+            (self.source / "docs" / name).write_text(
+                "蓝牙 guide: [中文](../README.md#可选聊天标题和状态桥接) "
+                "[English](../README.en.md#optional-chat-titles-and-settings-bridge) "
+                "[evidence](development.en.md).\n", encoding="utf-8")
+        shutil.copyfile(ROOT / "tools/vendor/RFC5903-LICENSE", self.source / "tools/vendor/RFC5903-LICENSE")
+        (self.source / "THIRD_PARTY_NOTICES.md").write_text(
+            "[RFC5903](tools/vendor/RFC5903-LICENSE)\n", encoding="utf-8")
+        self.firmware.write_bytes(firmware_fixture("0.12.0"))
 
     def resign(self, manifest_change=None):
         manifest_path = self.bundle / "manifest.json"
@@ -95,6 +116,84 @@ class ReleaseFixture(unittest.TestCase):
         manifest_text = (self.bundle / "manifest.json").read_text()
         self.assertNotIn(str(self.root), manifest_text)
         self.assertEqual(json.loads(manifest_text)["source_commit"], "a" * 40)
+
+    def test_ble_package_includes_guides_companion_path_license_and_current_screenshots(self):
+        self.prepare_ble_release()
+        bundle, archive_path = packaging.package("0.12.0", self.root / "ble-bundle", self.firmware,
+                                                  self.font, "b" * 40, self.source)
+        screenshots = {f"assets/tab5-{theme}-0.12.0.png" for theme in ("light", "dark")}
+        expected = flash.REQUIRED_FILES | {"SHA256SUMS", "BLUETOOTH.md", "BLUETOOTH.en.md",
+                                           "COMPANION.md", "licenses/RFC5903-LICENSE"} | screenshots
+        with ZipFile(archive_path) as archive:
+            self.assertEqual({name.removeprefix("ble-bundle/") for name in archive.namelist()}, expected)
+            for name in expected:
+                self.assertEqual(archive.read("ble-bundle/" + name), (bundle / name).read_bytes())
+        sums = dict(line.split("  ", 1)[::-1] for line in (bundle / "SHA256SUMS").read_text().splitlines())
+        self.assertEqual(set(sums), expected - {"SHA256SUMS"})
+        self.assertEqual((bundle / "licenses/RFC5903-LICENSE").read_bytes(),
+                         (self.source / "tools/vendor/RFC5903-LICENSE").read_bytes())
+        self.assertIn("(licenses/RFC5903-LICENSE)", (bundle / "THIRD_PARTY_NOTICES.md").read_text())
+        for name in ("BLUETOOTH.md", "BLUETOOTH.en.md"):
+            text = (bundle / name).read_text(encoding="utf-8")
+            self.assertIn("https://github.com/atovk/tab5-codex-micro/blob/v0.12.0/README", text)
+            self.assertNotIn("(../README", text)
+            self.assertNotIn("(development.", text)
+        companion = (bundle / "COMPANION.md").read_text(encoding="utf-8")
+        for instruction in ("--branch v0.12.0", "-m pip install -r requirements.txt", "--app-only",
+                            "requirements-flash.txt", "NVS", "macOS", "**简体中文**", "**English**"):
+            self.assertIn(instruction, companion)
+        manifest = json.loads((bundle / "manifest.json").read_text())
+        self.assertEqual(set(manifest["screenshots"]), screenshots)
+        self.assertEqual({image["file"] for image in manifest["images"]},
+                         {"firmware.factory.bin", "title-font.bin"})
+        self.assertEqual(flash.validate_bundle(bundle).version, "0.12.0")
+        result = subprocess.run([sys.executable, "-S", str(bundle / "flash.py"), "--check"],
+                                cwd=self.root, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ble_package_requires_current_screenshots_and_license_without_partial_output(self):
+        self.prepare_ble_release()
+        screenshot = self.source / "assets/tab5-dark-0.12.0.png"
+        data = screenshot.read_bytes()
+        screenshot.unlink()
+        output = self.root / "missing-assets"
+        with self.assertRaises(FileNotFoundError):
+            packaging.package("0.12.0", output, self.firmware, self.font, root=self.source)
+        screenshot.write_bytes(data)
+        (self.source / "tools/vendor/RFC5903-LICENSE").unlink()
+        with self.assertRaises(FileNotFoundError):
+            packaging.package("0.12.0", output, self.firmware, self.font, root=self.source)
+        self.assertFalse(output.exists())
+        self.assertFalse((self.root / "tab5-codex-micro-0.12.0.zip").exists())
+
+    def test_ble_assets_are_covered_by_offline_checksums(self):
+        self.prepare_ble_release()
+        bundle, _ = packaging.package("0.12.0", self.root / "ble-bundle", self.firmware,
+                                       self.font, root=self.source)
+        for name in ("assets/tab5-light-0.12.0.png", "assets/tab5-dark-0.12.0.png",
+                     "BLUETOOTH.md", "BLUETOOTH.en.md", "COMPANION.md", "licenses/RFC5903-LICENSE"):
+            path = bundle / name
+            original = path.read_bytes()
+            path.write_bytes(original + b"corruption")
+            with self.subTest(name=name), self.assertRaisesRegex(flash.ReleaseError, "SHA-256 mismatch"):
+                flash.validate_bundle(bundle)
+            path.write_bytes(original)
+
+    def test_explicit_screenshot_inputs_validate_format_and_reject_filename_collision(self):
+        screenshot = self.root / "custom.png"
+        screenshot.write_bytes(b"not a screenshot")
+        with self.assertRaisesRegex(ValueError, "PNG screenshot"):
+            packaging.package("0.11.0", self.root / "bad-png", self.firmware, self.font,
+                              root=self.source, screenshots=[screenshot])
+        screenshot.write_bytes(screenshot_fixture())
+        duplicate = self.source / screenshot.name
+        duplicate.write_bytes(screenshot_fixture())
+        with self.assertRaisesRegex(ValueError, "Duplicate screenshot filename"):
+            packaging.package("0.11.0", self.root / "duplicate-png", self.firmware, self.font,
+                              root=self.source, screenshots=[screenshot, duplicate])
+        bundle, _ = packaging.package("0.11.0", self.root / "custom" / "bundle", self.firmware, self.font,
+                                       root=self.source, screenshots=[screenshot])
+        self.assertEqual((bundle / "assets/custom.png").read_bytes(), screenshot_fixture())
 
     def test_corrupt_firmware_fails_before_usb_dependencies(self):
         path = self.bundle / "firmware.factory.bin"

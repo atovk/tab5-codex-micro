@@ -4,7 +4,7 @@
 
 This page describes the project structure, protocol boundaries, validation tools, and main implementation milestones. See the [README](../README.en.md) for installation and everyday use. Test screenshots, serial records, and build outputs go into the locally ignored `artifacts/` directory. The public repository excludes personal chat metadata and device backups.
 
-Current source includes the **unreleased 0.12.0 USB/BLE implementation; hardware validation is ongoing**. Precompiled USB firmware, the font, and bilingual flashing guides remain in the [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1). Historical results apply only to their labeled version and test cases, and do not establish Bluetooth compatibility. Usage steps are in the [Bluetooth guide](BLUETOOTH.en.md).
+Download precompiled **0.12.0 USB/BLE** firmware, the font, and bilingual flashing guides from the [0.12.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0). This page records the hardware checks completed before release and their boundaries. Historical results apply only to their labeled version and test cases and are not Bluetooth evidence for other versions. Usage steps are in the [Bluetooth guide](BLUETOOTH.en.md).
 
 ## Project structure
 
@@ -235,9 +235,9 @@ Common CDC commands:
 
 During screenshot transfer, the companion cannot acquire the serial lock, so metadata observed after transfer may exceed its TTL. This does not change the image copied when `SCREEN` began. To validate live state, save a fresh `STATUS` before the screenshot; release the lock after transfer and allow the companion to refresh.
 
-### Current 0.12.0 validation results (in development, unreleased)
+### 0.12.0 release validation results
 
-The final full suite passed **337 host tests in 49.060 seconds**. The final PlatformIO build succeeded in 37.87 seconds. App-only flashing verified the same Tab5 reporting exactly version 0.12.0 while preserving bonds, preferences, and fonts. The following evidence applies to this device and macOS desktop version, not every mapping, host, or recovery scenario.
+The firmware hardware-validation baseline passed **337 host tests in 49.060 seconds**. The corresponding PlatformIO build succeeded in 37.87 seconds. App-only flashing verified the same Tab5 reporting exactly version 0.12.0 while preserving bonds, preferences, and fonts. Release preparation, including packaging regressions, passed all **341 host tests in 50.550 seconds**. The factory image contains the same application as the hardware-validation build. The following evidence applies to this device and macOS desktop version, not every mapping, host, or recovery scenario.
 
 | Test | Observed result and boundary |
 | --- | --- |
@@ -311,7 +311,7 @@ These are short device-side samples, not universal performance limits or compute
 
 | Version | Changes |
 | --- | --- |
-| 0.12.0 (in development, unreleased) | Native USB/BLE protocol, PIN pairing and reconnection, and encrypted metadata GATT; Fast/Plan desktop execution, metadata stress, and automatic switching have case-specific evidence in the validation table |
+| 0.12.0 | Native USB/BLE protocol, PIN pairing and reconnection, and encrypted metadata GATT; Fast/Plan desktop execution, metadata stress, and automatic switching have case-specific evidence in the validation table |
 | 0.11.1 | Separate tracked settings and native targets, explicit connection evidence, nonblocking HID and release recovery, cooperative input during drawing, pause on game exit, permission-patch resynchronization, and strict flashing verification |
 | 0.11.0 | Runtime English/Chinese interface, bilingual documentation, and a prebuilt firmware/font download bundle |
 | 0.10.2 | Two-line titles, automatic overflow scrolling, touch pause, glyph-mask caching, and scroll regression tests |

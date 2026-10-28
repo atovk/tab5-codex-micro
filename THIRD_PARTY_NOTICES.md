@@ -25,6 +25,18 @@ its SHA-256 and applies the project-specific patch to a build-directory copy.
 
 - Source: https://github.com/hathach/tinyusb/blob/0.21.0/src/class/hid/hid_device.c
 
+## RFC 5903 P-256 test vectors
+
+`src/ble_ecc_compat.c` uses the public numerical test vectors from RFC 5903
+section 8.1, by D. Fu and J. Solinas (June 2010), for its startup known-answer
+self-test. Copyright (c) 2010 IETF Trust and the persons identified as authors
+of the code. The vectors retain the two-clause redistribution terms and
+disclaimer reproduced in the accompanying license.
+
+- Source: https://www.rfc-editor.org/rfc/rfc5903.html#section-8.1
+- License: [tools/vendor/RFC5903-LICENSE](tools/vendor/RFC5903-LICENSE)
+- Binary release bundles include the same text as `licenses/RFC5903-LICENSE`.
+
 ## Build dependencies
 
 M5Unified, M5GFX, ArduinoJson, Arduino-ESP32, ESP-IDF, pioarduino, and the Python

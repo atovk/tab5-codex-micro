@@ -2,13 +2,13 @@
 
 **简体中文** · [English](FLASHING.en.md)
 
-适用版本：**Tab5 Codex Micro 0.11.1**。硬件为 ESP32-P4 的 **M5Stack Tab5，16MB Flash／32MB PSRAM**。本指南使用预编译发布包，无需克隆仓库、安装 PlatformIO 或编译固件。
+适用版本：**Tab5 Codex Micro 0.12.0**。硬件为 ESP32-P4 的 **M5Stack Tab5，16MB Flash／32MB PSRAM**。本指南使用预编译发布包，无需克隆仓库、安装 PlatformIO 或编译固件。
 
-此发布包仅支持 USB。USB／BLE 双模属于尚未发布的 0.12.0 源码开发，实机验证仍在进行；详见 [蓝牙连接说明](BLUETOOTH.md)。蓝牙功能不提供无线刷机，固件和字库仍通过 USB 写入。
+本版支持 USB／蓝牙双模。**固件和字库仍通过 USB 写入，没有无线刷机功能**；刷入后按 [蓝牙连接说明](BLUETOOTH.md) 完成系统 PIN 配对及可选的标题／状态 companion 配置。本固件使用 Tab5 板载 C6 已有的兼容固件，无需单独刷写 C6，也不要刷写电脑上连接的其他开发板。其他 C6／ESP-Hosted 固件组合尚未验证。
 
 ## 1. 下载并解压
 
-从 [0.11.1 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.11.1) 下载 **`tab5-codex-micro-0.11.1.zip`**，完整解压到一个目录。不要直接在压缩包中运行脚本，也不要只下载 GitHub 自动生成的 “Source code” 压缩包。
+从 [0.12.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0) 下载 **`tab5-codex-micro-0.12.0.zip`**，完整解压到一个目录。不要直接在压缩包中运行脚本，也不要只下载 GitHub 自动生成的 “Source code” 压缩包。
 
 | 文件 | 用途 |
 | --- | --- |
@@ -18,14 +18,16 @@
 | `requirements-flash.txt` | 刷机所需 Python 依赖 |
 | `manifest.json`、`SHA256SUMS` | 发布文件和校验信息 |
 | `FLASHING.md`、`FLASHING.en.md` | 中英文刷机说明 |
+| `BLUETOOTH.md`、`BLUETOOTH.en.md`、`COMPANION.md` | 系统配对、自动重连及可选本地同步说明 |
+| `assets/tab5-light-0.12.0.png`、`assets/tab5-dark-0.12.0.png` | 英文示例界面的真实 Tab5 帧缓冲截图 |
 
 请将这些文件保留在同一目录。发布页上的独立 `.bin` 文件也可供已有工作流使用；初次安装推荐完整 ZIP，以免遗漏字库或校验文件。
 
-刷机会替换 Tab5 原有固件和分区布局，并重置本项目的主题、音量、亮度和语言设置；若需要恢复出厂系统，请在操作前自行备份 Flash。此镜像不能刷到 ESP32-S3 或其他型号。
+默认完整刷入会替换 Tab5 原有固件和分区布局，重置 NVS 中的蓝牙绑定、主题、音量、亮度和语言设置；已有蓝牙绑定失效后需要在电脑端删除旧记录并重新配对。若需要恢复出厂系统，请在操作前自行备份 Flash。此镜像不能刷到 ESP32-S3 或其他型号。
 
 ## 2. 准备 Python 环境
 
-需要 Python **3.11+** 和一条 USB-C **数据线**。下面命令面向 macOS／Linux，Windows 流程尚未验证。
+需要 Python **3.11+** 和一条 USB-C **数据线**。刷机工具支持 macOS／Linux；Windows 仅可离线运行 `--check`，不支持刷写。原生蓝牙和 companion 的本次实机验证在 macOS 上完成，不代表 Linux 的桌面蓝牙联动已经通过。
 
 在终端进入解压目录，执行：
 
@@ -83,13 +85,15 @@ sha256sum -c SHA256SUMS
 
 ## 5. 首次启动
 
-新安装默认使用 **English**。打开右上角齿轮，在 **Language／语言** 中切换中文或英文；语言、主题、声音和亮度在普通重启后会保留；重新刷入 factory 镜像会重置这些设置。
+新安装默认使用 **English**。打开右上角齿轮，在 **Language／语言** 中切换中文或英文；语言、主题、声音、亮度和已保存的蓝牙绑定在普通重启后会保留；重新刷入 factory 镜像会重置这些设置与绑定。
 
-在电脑 Codex 桌面应用的 **设置 → Codex Micro** 中配置设备。旋钮、摇杆和按键使用原生 Micro 映射。聊天标题和真实 Fast／Plan／权限状态需要额外运行 macOS 本地桥接；配置见本版本的 [中文 README](https://github.com/atovk/tab5-codex-micro/blob/v0.11.1/README.md) 或 [English README](https://github.com/atovk/tab5-codex-micro/blob/v0.11.1/README.en.md)。
+在电脑 Codex 桌面应用的 **设置 → Codex Micro** 中配置设备。旋钮、摇杆和按键使用原生 Micro 映射。USB 数据连接优先；蓝牙需要先完成系统配对，步骤见 [蓝牙连接说明](BLUETOOTH.md)。本版保持电池充电关闭，蓝牙只替代数据连接，设备仍需电池或合适电源。
 
-0.11.1 在独立只读“指定聊天设置 / Tracked settings”条中显示跟踪聊天下一次发送采用的真实设置，包括 Full access；未同步或过期时显示未知。Fast／Plan／Approve 原生按钮不代表该聊天的设置或操作目标，界面因此明确显示“操作目标未核对 / Target not verified”。切换桌面选中的聊天不会改变桥接目标，桥接也不会将原生按键重定向到跟踪聊天。
+聊天标题和真实 Fast／Plan／权限状态需要额外运行 macOS 本地桥接，不由原生 HID 灯光消息提供。下载包的刷机依赖不包含 companion；按 [蓝牙连接说明](BLUETOOTH.md#标题与状态-companion) 或本版本 [中文 README](https://github.com/atovk/tab5-codex-micro/blob/v0.12.0/README.md#可选聊天标题和状态桥接) 准备源码及完整依赖。
 
-“USB已提交 / USB submitted”只表示完整消息已交给 USB 栈，不是桌面执行回执；“USB未发送 / USB not sent”表示提交失败或队列拒绝，不承诺稍后发送。
+独立只读“指定聊天设置 / Tracked settings”条显示跟踪聊天下一次发送采用的真实设置，包括 Full access；未同步或过期时显示未知。Fast／Plan／Approve 原生按钮不代表该聊天的设置或操作目标，界面因此明确显示“操作目标未核对 / Target not verified”。切换桌面选中的聊天不会改变桥接目标，桥接也不会将原生按键重定向到跟踪聊天。
+
+“USB已提交／蓝牙已提交”只表示完整消息已交给对应传输栈，不是桌面执行回执；“USB未发送／蓝牙未发送”表示提交失败或队列拒绝，不承诺稍后发送。
 
 ## 后续更新
 
@@ -99,7 +103,16 @@ sha256sum -c SHA256SUMS
 .venv/bin/python flash.py --port /dev/cu.usbmodemXXXX --skip-font
 ```
 
-`--skip-font` 仅跳过字库，不保留 NVS 中的本地设置。首次安装不要使用它。如果新版本说明要求更新字库，应重新执行默认完整刷入。更新前暂停占用串口的工具，完成后可重新启动 companion。
+`--skip-font` **仍会写入 factory 镜像并覆盖 NVS，不保留蓝牙绑定或本地偏好**，仅跳过字库。首次安装不要使用它。如果新版本说明要求更新字库，应重新执行默认完整刷入。更新前暂停占用串口的工具，完成后可重新启动 companion。
+
+下载包的 `flash.py` **没有 `--app-only` 模式**。确需保留绑定和偏好时，使用 [v0.12.0 源码工具](https://github.com/atovk/tab5-codex-micro/blob/v0.12.0/tools/flash.py)；先按该版本 [源码构建说明](https://github.com/atovk/tab5-codex-micro/blob/v0.12.0/README.md#从源码构建) 准备并构建，再运行：
+
+```sh
+# 在 v0.12.0 源码仓库内执行，不是在下载包目录内。
+.venv/bin/python tools/flash.py --port /dev/cu.usbmodemXXXX --skip-build --app-only
+```
+
+此路径只写应用分区 `0x10000`。**仅当设备已经安装本项目兼容的分区布局、完整有效的标题字库，且本次更新不要求迁移时适用**；它不会检查设备旧分区表是否兼容，不可用于首次安装、恢复出厂系统或分区／字库升级。上述条件满足时，未改写的 NVS、绑定、偏好和字库可保留。本次实机已验证该应用更新后无需 PIN 重连；这不保证任意未来版本均可跳过完整刷入。
 
 ## 故障处理
 
