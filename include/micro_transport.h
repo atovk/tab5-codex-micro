@@ -140,7 +140,7 @@ public:
   // may show a transport receipt for completed.tag, never an execution ack.
   bool submitted(size_t count,Message& completed) {
     Message* current=servingCleanup_ ? &cleanup_ : (size_ ? &items_[0] : nullptr);
-    if (!current || !count || count>current->length-current->offset) return false;
+    if (!current || !count || count>size_t(current->length-current->offset)) return false;
     current->offset+=count; ++stats_.reports;
     if (current->offset!=current->length) return false;
     completed=*current;

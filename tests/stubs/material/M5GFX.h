@@ -2,11 +2,22 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 #include <vector>
 
 namespace lgfx {
 constexpr int rgb565_2Byte = 16;
-struct swap565_t { uint16_t raw = 0; explicit swap565_t(uint16_t v = 0) : raw(v) {} };
+// Scanline storage is raw RGB565; default construction must not initialize it.
+// Keep the value constructor used by solid fills without making the default
+// constructor non-trivial, so GCC can verify the same byte-copy contract.
+struct swap565_t {
+  uint16_t raw;
+  swap565_t() = default;
+  explicit constexpr swap565_t(uint16_t value) : raw(value) {}
+};
+static_assert(std::is_trivial<swap565_t>::value, "pixel storage must be trivial");
+static_assert(std::is_trivially_copyable<swap565_t>::value, "pixel storage must support byte copies");
+static_assert(sizeof(swap565_t) == sizeof(uint16_t), "RGB565 storage must have no padding");
 }
 
 // Deliberately small host surface; only the material helper's 16-bit API.
