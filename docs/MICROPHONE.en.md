@@ -2,7 +2,7 @@
 
 [简体中文](MICROPHONE.md) · **English**
 
-Source version: **0.13.0-dev.1, in development and not released**. The latest public download remains [0.12.0](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0), which does not include this onboard microphone feature. This development build has been built and flashed to Tab5. Measured USB capture, mute, gain, and settings persistence are described below.
+For **Tab5 Codex Micro 0.13.0**, available in the [0.13.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.0). USB microphone support is included in the compiled firmware and full ZIP; the older 0.12.0 download does not contain it. Measured capture, mute, gain, and settings persistence are described below.
 
 ## Connect and use
 
@@ -17,7 +17,7 @@ USB audio needs no title service and can operate alongside CDC synchronization a
 
 ## Interface
 
-The microphone page supports light and dark themes. These are English-interface captures from the development firmware running on Tab5.
+The microphone page supports light and dark themes. These are English-interface captures of the 0.13.0 firmware running on Tab5.
 
 | Light | Dark |
 | --- | --- |
@@ -49,7 +49,9 @@ USB host mute does not override independent local level monitoring; unmuting the
 
 Firmware captures only while the host opens USB input or the user opens the microphone page to monitor levels. Local mute stops capture. Firmware handles short memory blocks without saving recordings to Flash or SD or uploading audio to a network. Recording, transcription, and network activity after audio reaches the computer depend on the receiving application.
 
-This development build passed **376 host tests** and was flashed to the same Tab5 using an app-only update. The final USB firmware has completed these hardware checks:
+The microphone implementation was promoted from the verified **0.13.0-dev.1** build to 0.13.0. That validation build passed **376 host tests** and was flashed to the same Tab5 using an app-only update. The measured USB checks were:
+
+Final 0.13.0 release preparation passed **379 host tests in 65.227 seconds**. After rebuilding and flashing the final image, CoreAudio received **47,104 frames of nonzero 16kHz audio** from the real USB input. The ADC stopped when the host closed input, read errors remained 0, and native USB and existing BLE bonds remained available. A three-second window with USB input and the live meter produced 57 frames and a maximum input-sampling interval of **9.2ms**; this finite sample is not a general latency bound. Both theme captures come from this final firmware, freezing animation after collecting real levels.
 
 | Check | Measured result |
 | --- | --- |
@@ -64,9 +66,11 @@ This development build passed **376 host tests** and was flashed to the same Tab
 
 These results establish actual computer audio reception and mute/gain behavior. **Codex input selection, recording start, and transcription have not been verified** and still need confirmation in the application. The reconnect check used a firmware-level USB detach, not physical cable removal or power loss. Final-build voice quality, other computers, and long-duration use are outside this measured scope.
 
-## Flash development source
+## Flash the release or source
 
-These commands require a **source checkout containing the 0.13.0-dev.1 microphone implementation**. The 0.12.0 download and `v0.12.0` tag do not contain it. Prepare the environment using [Build from source](../README.en.md#build-from-source), then run:
+For a first installation, download the complete **`tab5-codex-micro-0.13.0.zip`** and follow the [flashing guide](FLASHING.en.md); it includes firmware, the title font, and these microphone instructions. No compilation is required.
+
+For an update from a compatible installation using the **`v0.13.0` source checkout**, prepare the environment using [Build from source](../README.en.md#build-from-source), then run:
 
 ```sh
 .venv/bin/python tools/prepare_platform.py
@@ -79,7 +83,7 @@ The port must identify the actual P4 Tab5. **Use `--app-only` only with an exist
 
 ## Troubleshooting
 
-- **USB input is missing:** check the development firmware, body data port, and data cable. Bluetooth pairing cannot replace USB audio enumeration.
+- **USB input is missing:** check that firmware 0.13.0 or later is installed, and check the body data port and data cable. Bluetooth pairing cannot replace USB audio enumeration.
 - **No Tab5 audio source with a Bluetooth-only connection:** this version does not support Bluetooth microphone audio. Connect USB or use the computer microphone.
 - **Meters move without application audio:** check that Tab5 Microphone is actually selected, microphone permissions, mute on both ends, and gain. Device levels are not desktop recording acknowledgement.
 - **Audio is distorted or echoes:** reduce gain, speak farther away, or use headphones. This version implements no AEC, beamforming, or noise reduction and makes no general audio-quality or latency guarantee.

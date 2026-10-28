@@ -77,7 +77,9 @@ uint16_t ble_att_mtu(uint16_t) { return liveMtu; }
 int ble_gap_terminate(uint16_t,int) { ++terminated; return 0; }
 int ble_gap_security_initiate(uint16_t) { ++securityRequests; return 0; }
 int ble_gap_conn_find(uint16_t handle,ble_gap_conn_desc* desc) {
-  if (handle!=live.conn_handle) return -1; *desc=live; return 0;
+  if (handle!=live.conn_handle) return -1;
+  *desc=live;
+  return 0;
 }
 bool secure(const ble_gap_conn_desc* desc) { return desc && desc->sec_state.encrypted && desc->sec_state.authenticated; }
 void error(const char* text) { std::strncpy(current.error,text,sizeof(current.error)-1); }

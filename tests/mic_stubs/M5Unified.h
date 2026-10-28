@@ -17,7 +17,7 @@ struct I2c {
   bool scanID(uint8_t address) const;
   bool writeRegister8(uint8_t address,uint8_t reg,uint8_t value,uint32_t rate);
 };
-struct Device { Speaker Speaker; I2c In_I2C; };
+struct Device { MicTest::Speaker Speaker; I2c In_I2C; };
 }
 
 extern MicTest::Device M5;

@@ -4,13 +4,13 @@
 
 Turn **M5Stack Tab5** into a touch controller for Codex. It preserves Micro's dial, joystick, and key interactions, and adds chat metadata, two themes, sound, and games to the 5-inch 1280×720 touchscreen.
 
-This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Latest version: **0.12.0 with USB/Bluetooth support**. Hardware validation scope and known limits are described below.
+This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Latest version: **0.13.0 with USB microphone and USB/Bluetooth controls**. Hardware validation scope and known limits are described below.
 
-The source checkout is developing **0.13.0-dev.1 USB microphone support**, providing standard USB audio input with meters, mute, and gain. It is not released, and the 0.12.0 download below does not include it. Bluetooth microphone audio is deferred; existing Bluetooth controls and title synchronization remain available. See the [microphone guide](docs/MICROPHONE.en.md) for the reason, setup, and validation scope.
+**0.13.0 adds a USB microphone:** select the onboard Tab5 microphone on your computer and adjust live meters, mute, and gain on the device, with no additional audio driver. Bluetooth microphone audio is deferred; existing Bluetooth controls and title synchronization remain available. See the [microphone guide](docs/MICROPHONE.en.md) for the reason, setup, and measured scope.
 
 ## Download and flash
 
-Open the [0.12.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0), download **`tab5-codex-micro-0.12.0.zip`**, and extract the entire archive. It includes compiled firmware, the title font, a flashing helper, checksums, and Chinese/English instructions. **No PlatformIO installation or compilation is required.**
+Open the [0.13.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.0), download **`tab5-codex-micro-0.13.0.zip`**, and extract the entire archive. It includes compiled firmware, the title font, a flashing helper, checksums, and Chinese/English flashing and microphone guides. **No PlatformIO installation or compilation is required.**
 
 You need Python **3.11+**, a USB-C data cable, and an ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. The flashing helper supports macOS/Linux. Windows supports offline `--check` only; flashing is not supported.
 
@@ -30,22 +30,28 @@ See the [flashing guide](docs/FLASHING.en.md) for full steps, addresses, updates
 
 ## Interface preview
 
-These are real 0.12.0 Tab5 framebuffer captures with an English interface and example content. Chat titles and states use isolated demonstration data. They show the interface and are not evidence that native actions executed on the desktop. Switch between Chinese and English in device settings. Tracked chat settings appear in a separate read-only strip, as described below.
+These are real Tab5 framebuffer captures of the 0.13.0 microphone page in English. Switch between Chinese and English in device settings. See the [USB microphone guide](docs/MICROPHONE.en.md) for setup.
 
-| Day | Night |
+| Light | Dark |
 | --- | --- |
-| ![English day console](assets/tab5-light-0.12.0.png) | ![English night console](assets/tab5-dark-0.12.0.png) |
+| ![English light microphone page](assets/tab5-microphone-light-0.13.0.png) | ![English dark microphone page](assets/tab5-microphone-dark-0.13.0.png) |
+
+Historical 0.12.0 console captures remain below. Chat titles and states use isolated demonstration data to show the layout; these are not evidence of fresh Bluetooth execution tests. Tracked chat settings appear in a separate read-only strip.
+
+| Light console (0.12.0) | Dark console (0.12.0) |
+| --- | --- |
+| ![Historical English light console](assets/tab5-light-0.12.0.png) | ![Historical English dark console](assets/tab5-dark-0.12.0.png) |
 
 ## Features
 
-- **USB/Bluetooth support:** native keys, dial, joystick, and lighting can use USB HID or BLE HID. Device settings provide a pairing PIN, saved bonds, and reconnection. Bluetooth Fast/Plan desktop changes and metadata synchronization have been verified on hardware; validation limits are described below.
+- **USB/Bluetooth support:** native keys, dial, joystick, and lighting can use USB HID or BLE HID. Device settings provide a pairing PIN, saved bonds, and reconnection. Bluetooth Fast/Plan desktop changes and metadata synchronization retain the 0.12.0 hardware baseline. This round checked enumeration and bond retention only; validation limits are described below.
 - **Native Micro interactions:** rotate around the dial's outer ring; tap or hold its center. The joystick sends continuous direction and distance and returns to center on release. The desktop app applies its Micro mappings.
 - **Chat keys:** six Agent keys show host lighting states and animated activity borders. A local companion can add titles for explicitly assigned chats.
 - **Two-line titles:** Chinese and English wrap at the normal font size. Longer titles scroll slowly in a loop, pause during touch, and resume after release.
 - **Separate chat settings strip:** an optional bridge displays the designated chat's accepted settings for its next send: Fast/Standard, Plan/Default, and permission presets including **Full access**. The strip is read-only; missing or expired metadata is unknown. These values no longer serve as the states of the native Fast/Plan/Approve buttons.
 - **Two languages and themes:** the console, settings, and games support Chinese/English and matching light-metal/dark-graphite themes. A full flash defaults to English; the selected language survives ordinary restarts.
 - **Subtle sound and preferences:** short sounds accompany keys, dial steps, and joystick actions. Volume, mute, brightness, and language are adjustable and survive restarts.
-- **Onboard USB microphone (0.13.0-dev.1 in development):** select **Tab5 Microphone**, a standard UAC1 input with 16kHz, 16-bit mono audio. The microphone page offers meters, mute, and gain. Voice keeps its desktop mapping without automatically choosing a source. Bluetooth does not carry microphone audio.
+- **Onboard USB microphone:** select **Tab5 Microphone**, a standard UAC1 input with 16kHz, 16-bit mono audio. The microphone page offers meters, mute, and gain. Voice keeps its desktop mapping without automatically choosing a source. Bluetooth does not carry microphone audio.
 - **Automatic orientation:** the IMU selects between two landscape orientations and updates touch coordinates. Screw holes down is the default reference. Flat placement, movement, and active touch hold the current orientation.
 - **Three offline games:** a space shooter, falling blocks, and a dinosaur runner, with pause, resume, and restart.
 
@@ -61,14 +67,14 @@ Connect USB-C, or pair Bluetooth using the steps below. Configure keys, dial beh
 | Tap an Agent key | Trigger its corresponding desktop chat shortcut |
 | Hold/release a command key | Preserve native press/release, including push-to-talk mappings |
 | Sun/moon at the top right | Switch and save the theme |
-| Gear at the top right | Volume, mute, brightness, language, Connections, and Microphone (0.13.0-dev.1 development build) |
+| Gear at the top right | Volume, mute, brightness, language, Connections, and Microphone |
 | Games at the top right | Open the local game library |
 
 Fast/Plan/Approve retain their native desktop behavior; they do not establish that the action targets the chat in the settings strip. The interface explicitly says **Target not verified**. A brief **USB not sent** or **BLE not sent** receipt means submission failed or the queue rejected the event, with no promise of later delivery. **USB submitted** or **BLE submitted** only means that the corresponding transport stack accepted the complete message; it does not acknowledge desktop execution.
 
 The header distinguishes USB and Bluetooth connections; **Last** lighting describes the last native lighting information received. An observed native session, a current transport connection, and fresh bridge metadata are independent evidence and cannot substitute for each other.
 
-The desktop settings determine the final behavior of dial modes, command keys, joystick actions, and voice. **Version 0.12.0 does not provide Tab5 microphone audio.** The USB microphone development build still requires selecting **Tab5 Microphone** in the computer or application. The Voice key does not switch audio sources or prove that Codex has started recording. With a Bluetooth-only connection, continue using the computer microphone. The auxiliary key may be unassigned until separate microphone keys are enabled and configured on the desktop.
+The desktop settings determine the final behavior of dial modes, command keys, joystick actions, and voice. Using the USB microphone requires selecting **Tab5 Microphone** in the computer or application. The Voice key does not switch audio sources or prove that Codex has started recording. With a Bluetooth-only connection, continue using the computer microphone. The auxiliary key may be unassigned until separate microphone keys are enabled and configured on the desktop.
 
 ## Bluetooth pairing and reconnection
 
@@ -86,7 +92,7 @@ To change computers or repair a stale bond, tap **Forget pairing** on Tab5 and c
 Native Micro HID lighting messages contain neither chat titles nor the current chat's Fast/Plan/permission text. Two local processes supplement this metadata while native USB/BLE HID handles input and lighting. The companion bridge currently targets **macOS** and requires the source repository and its Python dependencies; it is not required merely to flash the downloaded bundle. Wireless metadata uses a separate encrypted GATT service. A native Bluetooth connection alone does not supply titles or chat settings.
 
 ```sh
-git clone --branch v0.12.0 https://github.com/atovk/tab5-codex-micro.git
+git clone --branch v0.13.0 https://github.com/atovk/tab5-codex-micro.git
 cd tab5-codex-micro
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
@@ -181,7 +187,9 @@ Development primarily targets macOS and requires Git and a working C++ compiler.
 
 `hid-status` only requests state; it does not trigger keys. Input, metadata, fonts, and scrolling have host-side logic tests. Device tools cover touch, pixel restoration, sound, and themes. The new `tools/verify_transition_performance.py` measures theme, language, settings, and game-page transitions plus initial title-cache construction. It isolates native inputs and reads metrics after each completed transition, without treating command acknowledgement time as complete render time. See the [development notes](docs/development.en.md) for architecture, protocol boundaries, and validation methods.
 
-The 0.12.0 firmware hardware-validation baseline passed **337 host tests**, built successfully, and was flashed to hardware. Final four-frame Bluetooth dial verification passed. The maximum gap between input services during chunked capture was **1.168ms**; the independent BLE test window recorded a maximum input-sampling interval of **16.253ms**. Release preparation, including packaging regressions, passed all **341 host tests in 50.550 seconds**. See the development notes for measurement scope and details.
+The 0.13.0 release preparation passed **379 host tests in 65.227 seconds**, built and flashed the final version, and rechecked actual computer audio reception. USB capture, mute, gain, settings persistence, and logical reconnection results are listed in the [microphone guide](docs/MICROPHONE.en.md#capture-and-validation). This round did not repeat every BLE desktop execution check.
+
+The historical 0.12.0 firmware hardware-validation baseline passed **337 host tests**, built successfully, and was flashed to hardware. Final four-frame Bluetooth dial verification passed. The maximum gap between input services during chunked capture was **1.168ms**; the independent BLE test window recorded a maximum input-sampling interval of **16.253ms**. Release preparation, including packaging regressions, passed all **341 host tests in 50.550 seconds**. See the development notes for measurement scope and details.
 
 ## Current limits
 

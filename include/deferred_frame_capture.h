@@ -142,7 +142,7 @@ public:
                Evidence evidence,Hooks hooks={}) {
     poll(now,context);
     if (!active() || uint32_t(now-armedAt_)<frames_[next_].delay) return false;
-    if (next_+1<count && uint32_t(now-armedAt_)>=frames_[next_+1].delay) {
+    if (size_t(next_)+1<count && uint32_t(now-armedAt_)>=frames_[next_+1].delay) {
       abort(Reason::Deadline); return false; // no catch-up series of mislabeled moments
     }
     if (!context.activeBluetooth || context.switching

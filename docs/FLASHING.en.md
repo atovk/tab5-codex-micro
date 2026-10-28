@@ -2,13 +2,13 @@
 
 [简体中文](FLASHING.md) · **English**
 
-For **Tab5 Codex Micro 0.12.0**, targeting the ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. This guide uses a precompiled bundle. You do not need to clone the repository, install PlatformIO, or compile firmware.
+For **Tab5 Codex Micro 0.13.0**, targeting the ESP32-P4 **M5Stack Tab5 with 16MB flash and 32MB PSRAM**. This guide uses a precompiled bundle. You do not need to clone the repository, install PlatformIO, or compile firmware.
 
-This release supports USB and Bluetooth. **Firmware and fonts are still flashed over USB; wireless flashing is not provided.** After flashing, follow the [Bluetooth guide](BLUETOOTH.en.md) for system PIN pairing and optional title/state companion setup. The firmware uses compatible firmware already on Tab5's onboard C6. Do not flash the C6 separately or flash other connected development boards. Other C6/ESP-Hosted firmware combinations are unverified.
+This release adds a standard USB microphone alongside USB and Bluetooth controls. Microphone audio is USB-only; see the [microphone guide](MICROPHONE.en.md). **Firmware and fonts are still flashed over USB; wireless flashing is not provided.** After flashing, follow the [Bluetooth guide](BLUETOOTH.en.md) for system PIN pairing and optional title/state companion setup. The firmware uses compatible firmware already on Tab5's onboard C6. Do not flash the C6 separately or flash other connected development boards. Other C6/ESP-Hosted firmware combinations are unverified.
 
 ## 1. Download and extract
 
-Download **`tab5-codex-micro-0.12.0.zip`** from the [0.12.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0) and extract the entire archive into one directory. Do not run the script from inside the ZIP or download only GitHub's automatically generated “Source code” archive.
+Download **`tab5-codex-micro-0.13.0.zip`** from the [0.13.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.0) and extract the entire archive into one directory. Do not run the script from inside the ZIP or download only GitHub's automatically generated “Source code” archive.
 
 | File | Purpose |
 | --- | --- |
@@ -19,7 +19,9 @@ Download **`tab5-codex-micro-0.12.0.zip`** from the [0.12.0 Release](https://git
 | `manifest.json`, `SHA256SUMS` | Release file metadata and checksums |
 | `FLASHING.md`, `FLASHING.en.md` | Chinese and English flashing guides |
 | `BLUETOOTH.md`, `BLUETOOTH.en.md`, `COMPANION.md` | System pairing, automatic reconnection, and optional local synchronization |
-| `assets/tab5-light-0.12.0.png`, `assets/tab5-dark-0.12.0.png` | Real Tab5 framebuffer captures with English example content |
+| `MICROPHONE.md`, `MICROPHONE.en.md` | Chinese and English USB microphone guides |
+| `images/microphone-day.png`, `images/microphone-night.png` | Microphone guide images for offline viewing |
+| `assets/tab5-microphone-light-0.13.0.png`, `assets/tab5-microphone-dark-0.13.0.png` | Real Tab5 microphone-page captures in English |
 
 Keep these files in the same directory. Separate `.bin` assets are available for existing workflows, but the complete ZIP is recommended for a first installation so the font and checksums are not omitted.
 
@@ -27,7 +29,7 @@ The default full flash replaces the existing Tab5 firmware and partition layout 
 
 ## 2. Prepare Python
 
-Use Python **3.11+** and a USB-C **data cable**. The flashing helper supports macOS/Linux. Windows supports offline `--check` only; flashing is not supported. Native Bluetooth and companion hardware checks for this release were performed on macOS and do not establish Linux desktop Bluetooth compatibility.
+Use Python **3.11+** and a USB-C **data cable**. The flashing helper supports macOS/Linux. Windows supports offline `--check` only; flashing is not supported. USB microphone checks were performed on macOS. Detailed native Bluetooth and companion results retain the 0.12.0 macOS baseline; this release checked enumeration and bond retention without repeating every Bluetooth execution case. These checks do not establish Linux desktop compatibility.
 
 Open a terminal in the extracted directory:
 
@@ -85,11 +87,13 @@ Keep the cable connected and power stable until the helper finishes. It handles 
 
 ## 5. First start
 
-Fresh installations default to **English**. Open the gear at the top right and use **Language** to choose English or Chinese. Language, theme, audio, brightness, and saved Bluetooth bonds survive ordinary restarts. Flashing the factory image again resets these preferences and bonds.
+Fresh installations default to **English**. Open the gear at the top right and use **Language** to choose English or Chinese. Language, theme, audio, brightness, microphone gain/mute, and saved Bluetooth bonds survive ordinary restarts. Flashing the factory image again resets these preferences and bonds.
 
 Configure the device in **Settings → Codex Micro** in the Codex desktop app. Dial, joystick, and keys use native Micro mappings. USB data has priority. Bluetooth requires system pairing first; follow the [Bluetooth guide](BLUETOOTH.en.md). This firmware keeps battery charging disabled. Bluetooth replaces the data link, so Tab5 still needs a battery or suitable power source.
 
-Chat titles and real Fast/Plan/permission metadata require the additional macOS local bridge; they are not supplied by native HID lighting messages. The bundle's flashing dependencies do not include the companion. Use the [Bluetooth guide](BLUETOOTH.en.md#title-and-settings-companion) or this version's [English README](https://github.com/atovk/tab5-codex-micro/blob/v0.12.0/README.en.md#optional-chat-titles-and-settings-bridge) to prepare the source and full dependencies.
+For USB microphone input, select **Tab5 Microphone** in macOS Sound Input or the recording application, then open **Gear → Microphone** on Tab5 for meters, mute, and gain. It needs no companion or virtual audio driver. Voice keeps its desktop mapping without automatically selecting the input. Bluetooth carries controls and metadata, not microphone audio; see the [microphone guide](MICROPHONE.en.md).
+
+Chat titles and real Fast/Plan/permission metadata require the additional macOS local bridge; they are not supplied by native HID lighting messages. The bundle's flashing dependencies do not include the companion. Use the [Bluetooth guide](BLUETOOTH.en.md#title-and-settings-companion) or this version's [English README](https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/README.en.md#optional-chat-titles-and-settings-bridge) to prepare the source and full dependencies.
 
 A separate read-only **Tracked settings** strip displays the tracked chat's real next-send settings, including Full access. Missing or expired metadata is unknown. Native Fast/Plan/Approve buttons do not represent that chat's settings or establish their action target, so the interface explicitly shows **Target not verified**. Changing the selected desktop chat does not change the bridge target, and the bridge does not redirect native keys to the tracked chat.
 
@@ -105,14 +109,14 @@ Download and extract the complete ZIP for each new version and follow its instru
 
 `--skip-font` **still writes the factory image and overwrites NVS, so it does not preserve Bluetooth bonds or local preferences**. It only skips the font. Do not use it for the first installation. If release notes require a font update, use the default full flash again. Pause tools using the serial port before updating and restart the companion afterward.
 
-The bundle's `flash.py` **does not provide `--app-only`**. To preserve bonds and preferences, use the [v0.12.0 source helper](https://github.com/atovk/tab5-codex-micro/blob/v0.12.0/tools/flash.py). Prepare and build that version using [Build from source](https://github.com/atovk/tab5-codex-micro/blob/v0.12.0/README.en.md#build-from-source), then run:
+The bundle's `flash.py` **does not provide `--app-only`**. To preserve bonds and preferences, use the [v0.13.0 source helper](https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/tools/flash.py). Prepare and build that version using [Build from source](https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/README.en.md#build-from-source), then run:
 
 ```sh
-# Run in the v0.12.0 source checkout, not the downloaded bundle directory.
+# Run in the v0.13.0 source checkout, not the downloaded bundle directory.
 .venv/bin/python tools/flash.py --port /dev/cu.usbmodemXXXX --skip-build --app-only
 ```
 
-This writes only the application at `0x10000`. **It applies only when this project's compatible partition layout and complete, valid title font are already installed and this update requires no migration.** It does not inspect the device's previous partition table for compatibility. Do not use it for first installation, factory restoration, or partition/font upgrades. Under these conditions, the untouched NVS, bonds, preferences, and font can be retained. Hardware tests for this release verified reconnection after an application update without a new PIN; they do not guarantee that every future version can skip a full flash.
+This writes only the application at `0x10000`. **It applies only when this project's compatible partition layout and complete, valid title font are already installed and this update requires no migration.** It does not inspect the device's previous partition table for compatibility. Do not use it for first installation, factory restoration, or partition/font upgrades. Under these conditions, the untouched NVS, bonds, preferences, and font can be retained. The 0.12.0 baseline verified reconnection after an application update without a new PIN. The microphone update verified that saved bonds and microphone preferences remained; it did not repeat every BLE execution test. This does not guarantee that every future version can skip a full flash.
 
 ## Troubleshooting
 

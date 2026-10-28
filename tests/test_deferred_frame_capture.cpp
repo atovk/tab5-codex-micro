@@ -1,6 +1,7 @@
 #include "deferred_frame_capture.h"
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <unordered_set>
 #include <vector>

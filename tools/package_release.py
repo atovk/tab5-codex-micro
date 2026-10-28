@@ -6,11 +6,13 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import posixpath
 import re
 import shutil
 import struct
 import tempfile
 from zipfile import ZipFile, ZIP_DEFLATED
+from urllib.parse import urlsplit, urlunsplit
 
 from flash_release import FORMAT, FLASH_BYTES, FONT_OFFSET, inspect_firmware, inspect_font, validate_bundle
 
@@ -91,6 +93,32 @@ def bluetooth_instructions(source: str, version: str) -> str:
     return source
 
 
+def release_instructions(source: str, version: str, source_name: str,
+                         bundled_paths: dict[str, str]) -> str:
+    """Relocate source-doc links into the binary bundle or its exact source tag.
+
+    A guide copied from docs/ to the bundle root keeps offline navigation and
+    screenshots, while source-only tools/README/development links must not look
+    like files shipped in this download.
+    """
+    pattern = re.compile(r"(!?\[[^\]\n]*\]\()(<[^>\n]+>|[^\s)]+)((?:\s+[^)\n]*)?\))")
+
+    def relocate(match):
+        target = match[2]
+        angled = target.startswith("<")
+        parsed = urlsplit(target[1:-1] if angled else target)
+        if parsed.scheme or parsed.netloc or not parsed.path:
+            return match[0]
+        path = posixpath.normpath(posixpath.join(posixpath.dirname(source_name), parsed.path))
+        if path.startswith("../") or path.startswith("/"):
+            raise ValueError("Guide link leaves the source repository: " + target)
+        destination = bundled_paths.get(path, f"{REPOSITORY}/blob/v{version}/{path}")
+        relocated = urlunsplit(("", "", destination, parsed.query, parsed.fragment))
+        return match[1] + ("<" + relocated + ">" if angled else relocated) + match[3]
+
+    return pattern.sub(relocate, source)
+
+
 def screenshot_data(path: Path) -> bytes:
     data = path.read_bytes()
     if (not 33 <= len(data) <= 32 * 1024 * 1024 or path.suffix.lower() != ".png"
@@ -111,9 +139,12 @@ def package(version: str, output: Path, firmware: Path, font: Path,
     firmware_data, font_data = firmware.read_bytes(), font.read_bytes()
     inspect_firmware(firmware_data, version)
     glyphs = inspect_font(font_data)
-    includes_ble = tuple(map(int, version.split("-", 1)[0].split("."))) >= (0, 12, 0)
+    release_version = tuple(map(int, version.split("-", 1)[0].split(".")))
+    includes_ble = release_version >= (0, 12, 0)
+    includes_microphone = release_version >= (0, 13, 0)
     if screenshots is None:
-        screenshots = [root / "assets" / f"tab5-{theme}-{version}.png"
+        preview = "tab5-microphone" if includes_microphone else "tab5"
+        screenshots = [root / "assets" / f"{preview}-{theme}-{version}.png"
                        for theme in ("light", "dark")] if includes_ble else []
     if includes_ble and not screenshots:
         raise ValueError("USB/BLE releases must include current screenshots")
@@ -123,6 +154,8 @@ def package(version: str, output: Path, firmware: Path, font: Path,
         if name in screenshot_images:
             raise ValueError("Duplicate screenshot filename: " + path.name)
         screenshot_images[name] = screenshot_data(path)
+    guide_images = {"images/" + name: screenshot_data(root / "docs" / "images" / name)
+                    for name in ("microphone-day.png", "microphone-night.png")} if includes_microphone else {}
     output = output.resolve()
     archive = output.parent / f"tab5-codex-micro-{version}.zip"
     if output.exists() or archive.exists():
@@ -139,18 +172,28 @@ def package(version: str, output: Path, firmware: Path, font: Path,
             "LICENSE": "LICENSE", "THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
             "licenses/Tab5-UI-Sans-OFL.txt": "licenses/Tab5-UI-Sans-OFL.txt",
         }
+        if includes_ble:
+            sources.update({name: "docs/" + name for name in ("BLUETOOTH.md", "BLUETOOTH.en.md")})
+        if includes_microphone:
+            sources.update({name: "docs/" + name for name in ("MICROPHONE.md", "MICROPHONE.en.md")})
+        bundled_paths = {source: destination for destination, source in sources.items()}
+        bundled_paths.update({"docs/" + name: name for name in guide_images})
         for destination, source in sources.items():
-            shutil.copyfile(root / source, prepared / destination)
+            if includes_microphone and source.startswith("docs/") and destination.endswith(".md"):
+                (prepared / destination).write_text(release_instructions(
+                    (root / source).read_text(encoding="utf-8"), version, source, bundled_paths), encoding="utf-8")
+            elif destination in ("BLUETOOTH.md", "BLUETOOTH.en.md"):
+                (prepared / destination).write_text(bluetooth_instructions(
+                    (root / source).read_text(encoding="utf-8"), version), encoding="utf-8")
+            else:
+                shutil.copyfile(root / source, prepared / destination)
         if includes_ble:
             shutil.copyfile(root / "tools/vendor/RFC5903-LICENSE", prepared / "licenses/RFC5903-LICENSE")
             notices = (prepared / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
             (prepared / "THIRD_PARTY_NOTICES.md").write_text(notices.replace(
                 "(tools/vendor/RFC5903-LICENSE)", "(licenses/RFC5903-LICENSE)"), encoding="utf-8")
-            for name in ("BLUETOOTH.md", "BLUETOOTH.en.md"):
-                (prepared / name).write_text(bluetooth_instructions(
-                    (root / "docs" / name).read_text(encoding="utf-8"), version), encoding="utf-8")
             (prepared / "COMPANION.md").write_text(companion_instructions(version), encoding="utf-8")
-        for name, data in screenshot_images.items():
+        for name, data in (screenshot_images | guide_images).items():
             (prepared / name).parent.mkdir(parents=True, exist_ok=True)
             (prepared / name).write_bytes(data)
         (prepared / "licenses/TinyUSB-MIT.txt").write_text(
@@ -192,7 +235,8 @@ def main() -> int:
     parser.add_argument("--font", type=Path, default=ROOT / "artifacts/tab5-title-font-v1.bin")
     parser.add_argument("--source-commit", help="Full commit hash used to build the release")
     parser.add_argument("--screenshot", action="append", type=Path,
-                        help="PNG to include; repeat for themes. USB/BLE releases default to assets/tab5-{light,dark}-VERSION.png")
+                        help="PNG to include; repeat for themes. Defaults to assets/tab5-{light,dark}-VERSION.png "
+                             "for 0.12, or assets/tab5-microphone-{light,dark}-VERSION.png for 0.13+")
     args = parser.parse_args()
     output = args.output or ROOT / "artifacts" / ("release-" + args.version)
     directory, archive = package(args.version, output, args.firmware, args.font, args.source_commit,

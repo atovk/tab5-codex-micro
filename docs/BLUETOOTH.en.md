@@ -2,9 +2,9 @@
 
 [简体中文](BLUETOOTH.md) · **English**
 
-This page covers the **0.12.0 USB/Bluetooth release**. Hardware validation covers PIN pairing, reconnection after application updates that preserve bonds, Fast/Plan desktop state changes, dial navigation highlighting and native blue lighting, encrypted metadata stress tests, automatic USB/BLE switching, and reconnection after toggling Tab5 Bluetooth. Specific DOM focus, control identity, other lighting colors, and other cases listed below remain unconfirmed. Historical 0.11.1 firmware supports USB only. Interface presentation screenshots and older results are not Bluetooth execution evidence. Download the [0.12.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0), or see [Build from source](../README.en.md#build-from-source).
+This page applies to **0.13.0 USB/Bluetooth controls**. Detailed Bluetooth hardware results below are the **0.12.0 baseline**: PIN pairing, bond-preserving application updates, Fast/Plan desktop changes, dial navigation highlighting and native blue lighting, encrypted metadata stress tests, automatic USB/BLE switching, and Tab5 Bluetooth toggling. The microphone release checked enumeration and bond retention; it did not repeat all of these BLE execution tests. Specific DOM focus, control identity, other lighting colors, and other cases listed below remain unconfirmed. Historical 0.11.1 firmware supports USB only. Download the [0.13.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.13.0), or see [Build from source](../README.en.md#build-from-source).
 
-Onboard microphone audio is not carried over Bluetooth. The 0.13.0-dev.1 source adds a standard USB microphone. Tab5’s ESP32-C6 does not support the Classic/HFP protocol used by traditional Bluetooth headset microphones, and custom BLE audio would require an additional host audio bridge, so it is deferred. See the [microphone guide](MICROPHONE.en.md) for setup and details.
+Onboard microphone audio is not carried over Bluetooth. Version 0.13.0 adds a standard USB microphone. Tab5’s ESP32-C6 does not support the Classic/HFP protocol used by traditional Bluetooth headset microphones, and custom BLE audio would require an additional host audio bridge, so it is deferred. See the [microphone guide](MICROPHONE.en.md) for setup and details.
 
 ## Two data channels
 
@@ -86,6 +86,8 @@ The real project firmware requires link encryption and MITM authentication for I
 
 ## Checks and troubleshooting
 
+The measured Bluetooth results in this section were collected for 0.12.0. They are retained as the existing baseline and do not represent a full BLE retest for 0.13.0.
+
 When no other BLE companion owns the connection, send one metadata batch and wait for acknowledgements:
 
 ```sh
@@ -118,4 +120,4 @@ The four-frame dial test also ran with only BLE, in the same authenticated sessi
 
 After USB returned during automatic switching tests, BLE remained authenticated, bonded, and ready; titles/config/chat state was fresh; queues were empty; no keys or joystick displacement remained held; and failure, drop, and stale-message counters were zero. This covers the tested bounded transition sequence, not extremes such as holding a key across power loss.
 
-The firmware hardware-validation baseline passed **337 host tests**, built successfully, and passed app-only flash verification on the same Tab5, preserving bonds, preferences, and fonts. Release preparation, including packaging regressions, passed all **341 host tests in 50.550 seconds**. Four-frame verification with cooperative chunked capture passed: the maximum gap between input services during copying was **1.168ms**, while the independent BLE test window recorded a maximum input-sampling interval of **16.253ms**. See the [development notes](development.en.md) for evidence, total copy time per frame, and measurement scope. Unmeasured or unconfirmed cases include amber/red/green and other lighting mappings, specific DOM focus or control identity, other uncovered mappings, physical power loss and battery runtime, computer Bluetooth toggling/long sleep, and keys held across power loss. Controlled execution results do not change the general meanings of submitted and Target not verified in the UI.
+The 0.12.0 firmware hardware-validation baseline passed **337 host tests**, built successfully, and passed app-only flash verification on the same Tab5, preserving bonds, preferences, and fonts. Release preparation, including packaging regressions, passed all **341 host tests in 50.550 seconds**. Four-frame verification with cooperative chunked capture passed: the maximum gap between input services during copying was **1.168ms**, while the independent BLE test window recorded a maximum input-sampling interval of **16.253ms**. See the [development notes](development.en.md) for evidence, total copy time per frame, and measurement scope. Unmeasured or unconfirmed cases include amber/red/green and other lighting mappings, specific DOM focus or control identity, other uncovered mappings, physical power loss and battery runtime, computer Bluetooth toggling/long sleep, and keys held across power loss. Controlled execution results do not change the general meanings of submitted and Target not verified in the UI.

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 from zipfile import ZipFile
+from urllib.parse import urlsplit
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +89,28 @@ class ReleaseFixture(unittest.TestCase):
         (self.source / "THIRD_PARTY_NOTICES.md").write_text(
             "[RFC5903](tools/vendor/RFC5903-LICENSE)\n", encoding="utf-8")
         self.firmware.write_bytes(firmware_fixture("0.12.0"))
+
+    def prepare_microphone_release(self):
+        self.prepare_ble_release()
+        self.firmware.write_bytes(firmware_fixture("0.13.0"))
+        (self.source / "docs/images").mkdir()
+        for theme, page in (("light", "day"), ("dark", "night")):
+            (self.source / "assets" / f"tab5-microphone-{theme}-0.13.0.png").write_bytes(screenshot_fixture())
+            (self.source / "docs/images" / f"microphone-{page}.png").write_bytes(screenshot_fixture())
+        for language in ("", ".en"):
+            other_language = ".en" if not language else ""
+            for guide in ("MICROPHONE", "BLUETOOTH", "FLASHING"):
+                (self.source / "docs" / f"{guide}{language}.md").write_text(
+                    "USB microphone uses the standard system audio input.\n"
+                    f"[Other language]({guide}{other_language}.md)\n"
+                    f"[Microphone](../docs/MICROPHONE{language}.md#input) "
+                    f"[Bluetooth](BLUETOOTH{language}.md#pairing) "
+                    f"[Flashing](FLASHING{language}.md)\n"
+                    "![Day](images/microphone-day.png) ![Night](images/microphone-night.png)\n"
+                    f"[Source](../README{language}.md#build) [Source tool](../tools/flash.py) "
+                    f"[Development](development{language}.md#results)\n"
+                    "[External](https://example.com/documentation) [Same page](#input)\n",
+                    encoding="utf-8")
 
     def resign(self, manifest_change=None):
         manifest_path = self.bundle / "manifest.json"
@@ -178,6 +202,91 @@ class ReleaseFixture(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(flash.ReleaseError, "SHA-256 mismatch"):
                 flash.validate_bundle(bundle)
             path.write_bytes(original)
+
+    def test_microphone_package_has_offline_guides_images_hashes_and_source_tag_links(self):
+        self.prepare_microphone_release()
+        bundle, archive_path = packaging.package("0.13.0", self.root / "mic-bundle", self.firmware,
+                                                  self.font, "c" * 40, self.source)
+        previews = {f"assets/tab5-microphone-{theme}-0.13.0.png" for theme in ("light", "dark")}
+        guide_images = {f"images/microphone-{theme}.png" for theme in ("day", "night")}
+        guides = {f"{guide}{language}.md" for guide in ("MICROPHONE", "BLUETOOTH", "FLASHING")
+                  for language in ("", ".en")}
+        expected = (flash.REQUIRED_FILES | {"SHA256SUMS", "COMPANION.md", "licenses/RFC5903-LICENSE"}
+                    | guides | previews | guide_images)
+        with ZipFile(archive_path) as archive:
+            self.assertEqual({name.removeprefix("mic-bundle/") for name in archive.namelist()}, expected)
+            for name in expected:
+                self.assertEqual(archive.read("mic-bundle/" + name), (bundle / name).read_bytes())
+            # All packaged guide navigation and inline images remain usable
+            # after extraction. Source-only links resolve to this exact tag.
+            for name in guides:
+                text = archive.read("mic-bundle/" + name).decode("utf-8")
+                for target in re.findall(r"!?\[[^\]\n]*\]\(([^)\s]+)\)", text):
+                    parsed = urlsplit(target)
+                    if not parsed.scheme and parsed.path:
+                        self.assertIn("mic-bundle/" + parsed.path, archive.namelist())
+                self.assertIn("(MICROPHONE" + (".en" if ".en." in name else "") + ".md#input)", text)
+                self.assertIn("(images/microphone-day.png)", text)
+                for path in ("README", "tools/flash.py", "docs/development"):
+                    self.assertIn(f"https://github.com/atovk/tab5-codex-micro/blob/v0.13.0/{path}", text)
+                self.assertNotIn("(../", text)
+                self.assertIn("(https://example.com/documentation)", text)
+                self.assertIn("(#input)", text)
+        manifest = json.loads((bundle / "manifest.json").read_text())
+        self.assertEqual(set(manifest["screenshots"]), previews)
+        self.assertEqual({image["file"] for image in manifest["images"]},
+                         {"firmware.factory.bin", "title-font.bin"})
+        sums = dict(line.split("  ", 1)[::-1] for line in (bundle / "SHA256SUMS").read_text().splitlines())
+        self.assertEqual(set(sums), expected - {"SHA256SUMS"})
+        for name in sums:
+            self.assertEqual(sums[name], hashlib.sha256((bundle / name).read_bytes()).hexdigest())
+        # This is a native USB microphone release, without an experimental BLE
+        # microphone bridge, virtual audio driver, or extra flashing dependency.
+        self.assertEqual((bundle / "requirements-flash.txt").read_text(), "esptool==5.4.0\npyserial==3.5\n")
+        self.assertFalse(any("ble_mic" in name.lower() or name.endswith((".swift", ".driver")) for name in expected))
+        self.assertNotIn("BlackHole", (bundle / "COMPANION.md").read_text())
+        result = subprocess.run([sys.executable, "-S", str(bundle / "flash.py"), "--check"],
+                                cwd=self.root, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Release 0.13.0 verified", result.stdout)
+
+    def test_microphone_docs_and_images_are_verified_and_required_without_partial_output(self):
+        self.prepare_microphone_release()
+        bundle, _ = packaging.package("0.13.0", self.root / "mic-bundle", self.firmware,
+                                       self.font, root=self.source)
+        for name in ("MICROPHONE.md", "MICROPHONE.en.md", "images/microphone-day.png",
+                     "images/microphone-night.png", "assets/tab5-microphone-light-0.13.0.png"):
+            path = bundle / name
+            original = path.read_bytes()
+            path.write_bytes(original + b"corruption")
+            with self.subTest(name=name), self.assertRaisesRegex(flash.ReleaseError, "SHA-256 mismatch"):
+                flash.validate_bundle(bundle)
+            path.write_bytes(original)
+        for name in ("docs/MICROPHONE.md", "docs/MICROPHONE.en.md", "docs/images/microphone-day.png",
+                     "docs/images/microphone-night.png"):
+            path = self.source / name
+            original = path.read_bytes()
+            path.unlink()
+            output = self.root / "missing" / "mic-bundle"
+            with self.subTest(name=name), self.assertRaises(FileNotFoundError):
+                packaging.package("0.13.0", output, self.firmware, self.font, root=self.source)
+            self.assertFalse(output.exists())
+            self.assertFalse((output.parent / "tab5-codex-micro-0.13.0.zip").exists())
+            path.write_bytes(original)
+
+    def test_microphone_release_accepts_explicit_screenshots_and_rejects_invalid_guide_image(self):
+        self.prepare_microphone_release()
+        explicit = self.root / "new-microphone-preview.png"
+        explicit.write_bytes(screenshot_fixture())
+        bundle, _ = packaging.package("0.13.0", self.root / "explicit" / "bundle", self.firmware,
+                                       self.font, root=self.source, screenshots=[explicit])
+        self.assertEqual(json.loads((bundle / "manifest.json").read_text())["screenshots"],
+                         ["assets/new-microphone-preview.png"])
+        self.assertEqual((bundle / "images/microphone-night.png").read_bytes(), screenshot_fixture())
+        (self.source / "docs/images/microphone-day.png").write_bytes(b"not a PNG")
+        with self.assertRaisesRegex(ValueError, "PNG screenshot"):
+            packaging.package("0.13.0", self.root / "bad-image", self.firmware, self.font,
+                              root=self.source, screenshots=[explicit])
 
     def test_explicit_screenshot_inputs_validate_format_and_reject_filename_collision(self):
         screenshot = self.root / "custom.png"
