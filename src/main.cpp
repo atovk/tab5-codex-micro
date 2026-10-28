@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <algorithm>
+#include <cmath>
 #include <USB.h>
 #include <FS.h>
 #include <M5Unified.h>
@@ -12,6 +13,9 @@
 #include "bootloader.h"
 #include "device_settings.h"
 #include "micro_sound.h"
+#include "micro_mic.h"
+#include "usb_microphone.h"
+#include "firmware_version.h"
 #include "micro_orientation.h"
 #include "ui_locale.h"
 #include "render_service.h"
@@ -254,7 +258,61 @@ void applyOrientation() {
   rendered=millis()-16;
 }
 
+uint64_t microphoneEpoch() {
+  return UsbMicrophone::status().generation;
+}
+size_t microphoneSamples(const int16_t* samples,size_t count,uint64_t epoch) {
+  return UsbMicrophone::write(samples,count,uint32_t(epoch));
+}
+void serviceMicrophone() {
+  const auto usb=UsbMicrophone::status();
+  const auto mic=MicroMic::status();
+  UsbMicrophone::setMuted(mic.muted);
+  const bool streaming=usb.streaming && !usb.hostMuted;
+  MicroMic::setStreaming(streaming);
+  MicroMic::setMonitoring(MicroUI::microphoneOpen());
+  MicroSound::setMicrophoneActive(streaming && !mic.muted);
+  MicroUI::MicState ui;
+  ui.available=mic.available;
+  ui.usbMounted=usb.available && usb.mounted;
+  ui.streaming=usb.streaming && !usb.hostMuted;
+  ui.muted=mic.muted;
+  ui.hostMuted=usb.streaming && usb.hostMuted;
+  ui.gain=mic.gain; ui.rms=mic.level; ui.peak=mic.peak;
+  ui.clipping=mic.rawPeak>=32760;
+  MicroUI::setMicrophoneState(ui);
+}
+void microphoneDiagnostics() {
+  const auto mic=MicroMic::status();
+  const auto usb=UsbMicrophone::status();
+  JsonDocument d;
+  d["type"]="microphone"; d["available"]=mic.available;
+  d["active"]=mic.active; d["monitoring"]=mic.monitoring;
+  d["muted"]=mic.muted; d["gain"]=mic.gain;
+  d["rate"]=MicroMic::SampleRate;
+  d["level"]=mic.level; d["peak"]=mic.peak; d["rms"]=mic.rms; d["raw_peak"]=mic.rawPeak;
+  d["frames"]=mic.frames; d["samples"]=mic.samples; d["sent_samples"]=mic.sentSamples;
+  d["dropped_samples"]=mic.droppedSamples; d["clipped_samples"]=mic.clippedSamples;
+  d["read_errors"]=mic.readErrors; d["last_frame_ms"]=mic.lastFrameAt;
+  d["last_error"]=mic.lastError;
+  auto u=d["usb"].to<JsonObject>();
+  u["available"]=usb.available; u["mounted"]=usb.mounted;
+  u["streaming"]=usb.streaming; u["muted"]=usb.muted; u["host_muted"]=usb.hostMuted;
+  u["host_volume_db"]=usb.hostVolumeDb; u["generation"]=usb.generation;
+  u["queued_blocks"]=usb.queuedBlocks; u["written_samples"]=usb.writtenSamples;
+  u["dropped_samples"]=usb.droppedSamples; u["packets"]=usb.txPackets; u["bytes"]=usb.txBytes;
+  serializeJson(d,DebugSerial); DebugSerial.println();
+}
+
 void sendInput(const MicroUI::Event& event) {
+  if (event.key && !strncmp(event.key,"mic_",4)) {
+    if (event.action==1 && !MicroLink::capturingInputs()) {
+      if (!strcmp(event.key,"mic_mute")) MicroMic::setMuted(!MicroMic::status().muted);
+      else if (!strcmp(event.key,"mic_gain") && std::isfinite(event.distance))
+        MicroMic::setGain(uint16_t(std::max(0.f,std::min(200.f,event.distance))));
+    }
+    return;
+  }
   MicroSound::event(event,MicroLink::capturingInputs());
   if (event.key && !strncmp(event.key,"ble_",4)) {
     if (event.action==1 && !MicroLink::capturingInputs()) {
@@ -285,8 +343,9 @@ void serviceWirelessMetadata() {
 }
 
 void syncLocalSettings(bool feedback=true) {
+  const auto microphone=MicroMic::status();
   const DeviceSettings::Values next{MicroUI::soundEnabled(),MicroUI::volume(),MicroUI::brightness(),
-                                   UiLocale::english()};
+                                   UiLocale::english(),microphone.muted,microphone.gain};
   const bool audioChanged=next.sound!=appliedSettings.sound || next.volume!=appliedSettings.volume;
   const bool languageChanged=next.english!=appliedSettings.english;
   if (audioChanged) {
@@ -437,6 +496,34 @@ void debugCommand() {
         } else DebugSerial.println("ORIENTATION_MAP_ERROR");
       }
       else if (command=="AUDIO_DIAG") MicroSound::hardwareDiagnostics(DebugSerial);
+      else if (command=="MIC_INFO") microphoneDiagnostics();
+      else if (command=="MIC OPEN" || command=="MIC CLOSE") {
+        if (inputTest && !testPressed) {
+          inputTestAt=millis();
+          auto tap=[](int x,int y) {
+            sendInput(MicroUI::touch(x,y,true));
+            sendInput(MicroUI::touch(x,y,false)); drainInputs();
+          };
+          if (command=="MIC OPEN" && !MicroUI::microphoneOpen()) {
+            if (MicroUI::settingsOpen()) tap(888,49);
+            tap(888,49); tap(948,648);
+          } else if (command=="MIC CLOSE" && MicroUI::microphoneOpen()) tap(1181,49);
+          DebugSerial.println(MicroUI::microphoneOpen() ? "MIC OPEN" : "MIC CLOSE");
+        } else DebugSerial.println("MIC_ERROR");
+      }
+      else if (command=="MIC MUTE ON" || command=="MIC MUTE OFF") {
+        if (inputTest) {
+          inputTestAt=millis(); MicroMic::setMuted(command=="MIC MUTE ON");
+          serviceMicrophone(); syncLocalSettings(false); DebugSerial.println(command);
+        } else DebugSerial.println("MIC_ERROR");
+      }
+      else if (command.startsWith("MIC GAIN ")) {
+        int gain; char extra;
+        if (inputTest && sscanf(command.c_str()+9,"%d %c",&gain,&extra)==1 && gain>=0 && gain<=200) {
+          inputTestAt=millis(); MicroMic::setGain(gain);
+          serviceMicrophone(); syncLocalSettings(false); DebugSerial.println(command);
+        } else DebugSerial.println("MIC_ERROR");
+      }
       else if (command=="BLE_INFO") MicroBle::diagnostics(DebugSerial);
       else if (command=="BLE_ON" || command=="BLE_OFF") {
         MicroBle::setEnabled(command=="BLE_ON"); DebugSerial.println("BLE_OK");
@@ -706,13 +793,23 @@ void setup() {
   // Initialize I2S before USB: the P4 SDK GPIO helper still assumes the
   // default PHY mapping and would disable OTG pads when setting GPIO26/27.
   MicroSound::begin(appliedSettings.sound,appliedSettings.volume);
+  MicroMic::setMuted(appliedSettings.micMuted);
+  MicroMic::setGain(appliedSettings.micGain);
+  MicroMic::begin(microphoneSamples,microphoneEpoch);
+  UsbMicrophone::begin();
+  UsbMicrophone::setMuted(appliedSettings.micMuted);
+  MicroUI::MicState initialMicrophone;
+  initialMicrophone.available=MicroMic::status().available;
+  initialMicrophone.muted=appliedSettings.micMuted;
+  initialMicrophone.gain=appliedSettings.micGain;
+  MicroUI::setMicrophoneState(initialMicrophone);
   previousTheme=MicroUI::theme();
   if (!uiReady) { M5.Display.fillScreen(TFT_BLACK); M5.Display.setTextColor(TFT_RED); M5.Display.println("Canvas allocation failed"); }
   USB.begin();
   MicroBle::begin(usbSerial);
   MicroLink::attachBle({MicroBle::status,MicroBle::submit,MicroBle::disconnect});
   RenderService::setCallback(serviceInputs);
-  DebugSerial.println("Tab5 Codex Micro 0.12.0 ready");
+  DebugSerial.println("Tab5 Codex Micro " TAB5_VERSION " ready");
 }
 void loop() {
   if (usbPauseAt && int32_t(millis()-usbPauseAt)>=0) {
@@ -731,6 +828,7 @@ void loop() {
   debugCommand();
   MicroBle::poll();
   serviceWirelessMetadata();
+  serviceMicrophone();
   syncLocalSettings();
   DeviceSettings::poll(p.isPressed() || (inputTest && testPressed));
   streamScreen();

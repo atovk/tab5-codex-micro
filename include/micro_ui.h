@@ -8,6 +8,13 @@ namespace MicroUI {
 enum class Theme : uint8_t { Light, Dark };
 enum class Transport : uint8_t { None, Usb, Bluetooth };
 
+struct MicState {
+  bool available=false, usbMounted=false, streaming=false, muted=false, hostMuted=false;
+  uint16_t gain=100;
+  uint8_t rms=0, peak=0;
+  bool clipping=false;
+};
+
 struct Slot {
   uint32_t color = 0;
   uint8_t brightness = 0;
@@ -91,6 +98,9 @@ uint8_t brightness();
 void setVolume(uint8_t value);
 void setBrightness(uint8_t value);
 bool settingsOpen();
+// Audio data never enters the UI; only a bounded meter snapshot is copied.
+void setMicrophoneState(const MicState& state);
+bool microphoneOpen();
 // Diagnostic baseline: retain scene updates, but present all 921,600 pixels.
 void setFullPresent(bool enabled);
 void setEffectsFrozen(bool frozen);

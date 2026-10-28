@@ -16,11 +16,14 @@ class BluetoothUiTests(unittest.TestCase):
         state = source[source.index('struct InputState {'):source.index('portMUX_TYPE inputMux')]
         touch = source[source.index('Event touch(int16_t'):source.index('\nbool pollEvent(Event&')]
         labels = source[source.index('const char* bluetoothStatus('):source.index('\nvoid drawBluetoothEntry(')]
+        mic_labels = source[source.index('bool sameMicrophoneControls('):source.index('\nvoid drawMicrophoneIcon(')]
+        mic_api = source[source.index('void setMicrophoneState('):source.index('\nvoid setFullPresent(')]
         harness = r'''
 #include <cassert>
 #include <cstring>
 #include <cstdio>
 #include <iostream>
+#include <algorithm>
 #include "micro_ui.h"
 #include "ui_locale.h"
 #define portENTER_CRITICAL(p) (void)(p)
@@ -49,7 +52,7 @@ bool inside(int x,int y,int left,int top,int width,int height) {
 }
 uint8_t sliderValue(int,uint8_t minimum) { return minimum+30; }
 const char* tr(const char* zh,const char* en) { return UiLocale::text(zh,en); }
-''' + labels + touch + r'''
+''' + labels + mic_labels + touch + mic_api + r'''
 }
 using namespace MicroUI;
 Event tap(int x,int y) {
@@ -63,7 +66,7 @@ void expect(const Event& event,const char* name) {
 void open() {
   input={};
   assert(tap(888,49).key==nullptr && input.settingsMode);
-  assert(tap(640,648).key==nullptr && input.bluetoothPage);
+  assert(tap(332,648).key==nullptr && input.bluetoothPage);
 }
 int main() {
   open();
@@ -102,9 +105,64 @@ int main() {
   assert(tap(1181,49).key==nullptr && !input.bluetoothPage && input.settingsMode);
   assert(tap(700,300).key==nullptr && input.volume==30); // old volume target
   assert(tap(700,500).key==nullptr && input.brightness==40); // old brightness target
-  assert(tap(640,648).key==nullptr && input.bluetoothPage);
+  assert(tap(332,648).key==nullptr && input.bluetoothPage);
   assert(tap(888,49).key==nullptr && !input.settingsMode && !input.bluetoothPage);
   assert(MicroControls::nativeSamples==0); // all settings gestures stay local
+
+  // The onboard input is a local settings page, independent of native Voice HID.
+  assert(tap(888,49).key==nullptr && input.settingsMode);
+  assert(tap(948,648).key==nullptr && microphoneOpen() && !input.bluetoothPage);
+  assert(tap(640,648).key==nullptr); // unavailable: no mute action
+  assert(tap(720,532).key==nullptr); // unavailable: no gain action
+  MicState microphone{};
+  microphone.available=true;
+  microphone.usbMounted=true;
+  microphone.gain=350;
+  microphone.rms=180;
+  microphone.peak=240;
+  setMicrophoneState(microphone);
+  assert(input.microphone.gain==200 && input.microphone.rms==100 && input.microphone.peak==100);
+  expect(touch(640,648,true),"mic_mute");
+  assert(touch(720,532,true).key==nullptr); // mute drag cannot adjust gain
+  assert(touch(0,0,false).key==nullptr);
+  auto gain=touch(320,532,true);
+  expect(gain,"mic_gain"); assert(gain.distance==0);
+  gain=touch(1120,532,true);
+  expect(gain,"mic_gain"); assert(gain.distance==200);
+  const auto originalTheme=input.theme;
+  gain=touch(1071,49,true); // dragging across header remains a gain gesture
+  expect(gain,"mic_gain"); assert(gain.distance==188 && input.theme==originalTheme);
+  assert(touch(0,0,false).key==nullptr && input.microphone.gain==188);
+  gain=tap(720,532);
+  expect(gain,"mic_gain"); assert(gain.distance==100);
+  assert(tap(1181,49).key==nullptr && !microphoneOpen() && input.settingsMode);
+  assert(tap(948,648).key==nullptr && microphoneOpen());
+  assert(tap(888,49).key==nullptr && !microphoneOpen() && !input.settingsMode);
+  assert(tap(1181,49).key==nullptr && input.playMode);
+  assert(tap(888,49).key==nullptr && !input.playMode && input.settingsMode);
+  assert(tap(948,648).key==nullptr && microphoneOpen());
+  assert(tap(950,49).key==nullptr && microphoneOpen()); // theme keeps the page
+  assert(tap(1181,49).key==nullptr && !microphoneOpen() && input.settingsMode);
+  assert(MicroControls::nativeSamples==0);
+
+  microphone={};
+  assert(std::strcmp(microphoneStatus(microphone,false),"Unavailable")==0);
+  microphone.available=true;
+  assert(std::strcmp(microphoneStatus(microphone,false),"Connect USB")==0);
+  microphone.usbMounted=true;
+  assert(std::strcmp(microphoneStatus(microphone,false),"USB ready")==0);
+  assert(std::strcmp(microphoneStatus(microphone,true),"Monitoring")==0);
+  microphone.streaming=true;
+  assert(std::strcmp(microphoneStatus(microphone,true),"USB streaming")==0);
+  microphone.hostMuted=true;
+  assert(std::strcmp(microphoneStatus(microphone,true),"Computer muted")==0);
+  microphone.hostMuted=false;
+  microphone.muted=true;
+  assert(std::strcmp(microphoneStatus(microphone,true),"Muted")==0);
+  auto meterOnly=microphone;
+  meterOnly.rms=73; meterOnly.peak=91; meterOnly.clipping=true;
+  assert(sameMicrophoneControls(microphone,meterOnly));
+  assert(sameMicrophoneIndicator(microphone,meterOnly)); // meter cannot dirty the dashboard
 
   State state{};
   assert(std::strcmp(bluetoothStatus(state),"Bluetooth off")==0);
@@ -146,6 +204,7 @@ int main() {
   bluetoothPasskey(state,pin,sizeof(pin));
   assert(std::strcmp(pin,"------")==0); // completed pairing hides stale PIN
   UiLocale::setLanguage(UiLocale::Language::Chinese);
+  assert(std::strcmp(microphoneStatus(microphone,true),"已静音")==0);
   assert(std::strcmp(activeTransportLabel(state),"USB 有线")==0);
   assert(std::strcmp(bluetoothStatus(state),"蓝牙已连接")==0);
   std::cout << "Bluetooth UI touch and state contracts passed\n";

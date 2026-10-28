@@ -4,6 +4,8 @@
 
 This page covers the **0.12.0 USB/Bluetooth release**. Hardware validation covers PIN pairing, reconnection after application updates that preserve bonds, Fast/Plan desktop state changes, dial navigation highlighting and native blue lighting, encrypted metadata stress tests, automatic USB/BLE switching, and reconnection after toggling Tab5 Bluetooth. Specific DOM focus, control identity, other lighting colors, and other cases listed below remain unconfirmed. Historical 0.11.1 firmware supports USB only. Interface presentation screenshots and older results are not Bluetooth execution evidence. Download the [0.12.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0), or see [Build from source](../README.en.md#build-from-source).
 
+Onboard microphone audio is not carried over Bluetooth. The 0.13.0-dev.1 source adds a standard USB microphone. Tab5’s ESP32-C6 does not support the Classic/HFP protocol used by traditional Bluetooth headset microphones, and custom BLE audio would require an additional host audio bridge, so it is deferred. See the [microphone guide](MICROPHONE.en.md) for setup and details.
+
 ## Two data channels
 
 | Content | USB | Bluetooth |

@@ -1,4 +1,5 @@
 #include "micro_ble.h"
+#include "firmware_version.h"
 #include "ble_pairing_policy.h"
 #include "ble_session_policy.h"
 #include <Arduino.h>
@@ -362,7 +363,7 @@ bool initialize() {
   auto* bridge=server->createService(serviceUuid);
   bridge->createCharacteristic(rxUuid,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_ENC|BLECharacteristic::PROPERTY_WRITE_AUTHEN)->setCallbacks(&metadataInput);
   metadataTx=bridge->createCharacteristic(txUuid,readNotify|BLECharacteristic::PROPERTY_READ_AUTHEN);
-  String identity=String("{\"v\":1,\"serial\":\"")+chipSerial+"\",\"maxLine\":6144,\"firmware\":\"tab5-micro-0.12.0\"}";
+  String identity=String("{\"v\":1,\"serial\":\"")+chipSerial+"\",\"maxLine\":6144,\"firmware\":\"" TAB5_FIRMWARE_ID "\"}";
   bridge->createCharacteristic(identityUuid,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_READ_ENC|BLECharacteristic::PROPERTY_READ_AUTHEN)->setValue(identity);
   info->start(); hid->start(); bridge->start(); server->start();
   // Bonded hosts may cache an older firmware's HID table. Queue the standard

@@ -141,6 +141,19 @@ def write_if_changed(destination, content):
         destination.write_text(content, encoding="utf-8")
 
 
+def exclude_stock_audio(build_env, node):
+    """Only the project microphone owns TinyUSB's global audio callbacks.
+
+    This platform links bundled library objects directly, including unused
+    USBAudioCard.cpp. Its strong callbacks conflict with the microphone-only
+    UAC1 implementation. Skip that exact stock source without editing the SDK
+    or suppressing duplicate-symbol errors for any other component.
+    """
+    framework = Path(build_env.PioPlatform().get_package_dir("framework-arduinoespressif32"))
+    stock = framework / "libraries" / "USB" / "src" / "USBAudioCard.cpp"
+    return None if Path(node.srcnode().get_abspath()).resolve() == stock.resolve() else node
+
+
 def register_platformio(environment):
     if environment.BoardConfig().get("build.mcu") != "esp32p4":
         raise RuntimeError("The Tab5 USB-C patch is only valid for ESP32-P4")
@@ -207,6 +220,7 @@ def register_platformio(environment):
 
     for name in ("esp32-hal-tinyusb.c", "USBHID.cpp", "USBCDC.cpp"):
         environment.AddBuildMiddleware(use_project_usb_glue, "*" + name)
+    environment.AddBuildMiddleware(exclude_stock_audio, "*USBAudioCard.cpp")
 
 
 try:

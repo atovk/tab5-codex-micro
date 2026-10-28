@@ -19,6 +19,7 @@
 #include <esp_heap_caps.h>
 #include <math.h>
 #include <cstring>
+#include <array>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 
@@ -86,6 +87,10 @@ bool playMode = false;
 bool settingsMode = false;
 bool bluetoothPage = false, bluetoothForgetConfirm = false;
 bool previousBluetoothPage = false, previousBluetoothForgetConfirm = false;
+bool microphonePage = false, previousMicrophonePage = false;
+MicState renderedMicrophone, previousMicrophone;
+uint8_t microphoneLevels[64] = {};
+uint32_t microphoneMeterAt = 0;
 bool forceFullPresent = false;
 bool finger = false;
 int held = -1;
@@ -102,6 +107,8 @@ struct InputState {
   bool settingsMode = false;
   bool bluetoothPage = false;
   bool bluetoothForgetConfirm = false;
+  bool microphonePage = false;
+  MicState microphone;
   bool bleAvailable = false, bleEnabled = false, bleReady = false;
   bool blePairing = false, bleBonded = false;
   bool fullPresent = false;
@@ -118,7 +125,8 @@ struct InputState {
   uint8_t volume = 45;
   uint8_t brightness = 24;
   // 1..5: audio/display; 6: connections; 7: BLE toggle; 8: pair;
-  // 9: forget; 10: cancel forget; 11: confirm forget.
+  // 9: forget; 10: cancel forget; 11: confirm forget;
+  // 12: microphone page; 13: microphone mute; 14: microphone gain.
   uint8_t settingsControl = 0;
   uint32_t settingsRevision = 0;
   bool effectsFrozen = false;
@@ -612,13 +620,140 @@ const char* transportReceipt(const State& state, bool submitted) {
 }
 
 void drawBluetoothEntry(const State& state) {
-  constexpr int x=40, y=608, w=1200, h=80;
+  constexpr int x=40, y=608, w=584, h=80;
   const bool pressed=renderedSettingsControl==6;
   paintBody(x,y,w,h);
   keycap(x,y,w,h,pressed);
   text(tr("连接", "Connections"),76,632+(pressed?2:0),INK,UiFont::sans24());
-  centerFitted(bluetoothStatus(state),710,648+(pressed?2:0),720,MUTED,UiFont::sans20());
-  UiIcons::draw(canvas,UiIcons::Icon::ChevronRight,1194,648+(pressed?2:0),24,INK);
+  centerFitted(bluetoothStatus(state),440,648+(pressed?2:0),260,MUTED,UiFont::sans16());
+  UiIcons::draw(canvas,UiIcons::Icon::ChevronRight,590,648+(pressed?2:0),24,INK);
+}
+
+bool sameMicrophoneControls(const MicState& a, const MicState& b) {
+  return a.available==b.available && a.usbMounted==b.usbMounted
+      && a.streaming==b.streaming && a.muted==b.muted && a.hostMuted==b.hostMuted
+      && a.gain==b.gain;
+}
+
+bool sameMicrophoneIndicator(const MicState& a, const MicState& b) {
+  return a.available==b.available && a.streaming==b.streaming
+      && a.muted==b.muted && a.hostMuted==b.hostMuted;
+}
+
+const char* microphoneStatus(const MicState& state, bool monitoring) {
+  if (!state.available) return tr("麦克风不可用", "Unavailable");
+  if (state.hostMuted) return tr("电脑已静音", "Computer muted");
+  if (state.muted) return tr("已静音", "Muted");
+  if (state.streaming) return tr("USB 音频传输中", "USB streaming");
+  if (monitoring) return tr("本机监听", "Monitoring");
+  return state.usbMounted ? tr("USB 已就绪", "USB ready")
+      : tr("请连接 USB", "Connect USB");
+}
+
+void drawMicrophoneIcon(int x, int y, int size, uint32_t ink, bool muted) {
+  UiIcons::draw(canvas,UiIcons::Icon::Microphone,x,y,size,ink);
+  if (muted) MaterialGradient::line(canvas,x-size*.37f,y-size*.37f,
+      x+size*.37f,y+size*.37f,1.8f,ink);
+}
+
+void drawMicrophoneEntry() {
+  constexpr int x=656,y=608,w=584,h=80;
+  const bool pressed=renderedSettingsControl==12;
+  paintBody(x,y,w,h);
+  keycap(x,y,w,h,pressed);
+  text(tr("麦克风", "Microphone"),692,632+(pressed?2:0),INK,UiFont::sans24());
+  centerFitted(microphoneStatus(renderedMicrophone,false),1050,648+(pressed?2:0),230,
+      renderedMicrophone.streaming ? material->accent : MUTED,UiFont::sans16());
+  UiIcons::draw(canvas,UiIcons::Icon::ChevronRight,1206,648+(pressed?2:0),24,INK);
+}
+
+void drawMicrophoneIndicator() {
+  // This indicates this device's audio activity, not an application's selected input.
+  const bool streaming=renderedMicrophone.streaming;
+  if (!renderedMicrophone.available
+      || (!streaming && !renderedMicrophone.muted && !renderedMicrophone.hostMuted && !microphonePage)) return;
+  const bool muted=renderedMicrophone.muted || renderedMicrophone.hostMuted;
+  const uint32_t ink=muted ? MUTED : streaming
+      ? (dark() ? 0xF0A0A8 : 0xAC3D50) : material->accent;
+  drawMicrophoneIcon(232,49,20,ink,muted);
+}
+
+void drawMicrophoneStatus() {
+  paintBody(40,108,1200,96);
+  text(tr("Tab5 麦克风", "Tab5 microphone"),64,128,INK,UiFont::sans32());
+  const bool muted=renderedMicrophone.muted || renderedMicrophone.hostMuted;
+  const bool streaming=renderedMicrophone.streaming;
+  const uint32_t color=muted ? MUTED : streaming ? material->accent : INK;
+  keycap(918,120,306,76,false);
+  centerFitted(microphoneStatus(renderedMicrophone,true),1071,158,282,color,UiFont::sans24());
+  const char* hint=renderedMicrophone.hostMuted
+      ? tr("请在电脑上取消此输入的静音", "Unmute this input on your computer")
+      : !renderedMicrophone.usbMounted
+          ? tr("通过 USB 连接电脑后可作为麦克风使用", "Connect USB to use this microphone")
+          : !streaming
+              ? tr("在电脑上选择 Tab5 Microphone 输入", "Select Tab5 Microphone as your computer's input") : "";
+  if (renderedMicrophone.available) text(hint,64,182,MUTED,UiFont::sans16());
+}
+
+void drawMicrophoneMeter(uint32_t now, bool advance) {
+  constexpr int left=76,top=256,width=912,height=144,centerY=328;
+  const bool active=renderedMicrophone.available && !renderedMicrophone.muted;
+  const uint8_t rms=active ? renderedMicrophone.rms : 0;
+  const uint8_t peak=active ? renderedMicrophone.peak : 0;
+  if (advance) {
+    memmove(microphoneLevels,microphoneLevels+1,sizeof(microphoneLevels)-1);
+    microphoneLevels[63]=rms;
+  }
+  paintTray(left,top,width,height);
+  for (int i=0;i<64;++i) {
+    const uint8_t level=microphoneLevels[i];
+    const int barHeight=std::max(2,int(level)*128/100);
+    const uint32_t ink=!level ? mix(material->trayTop,MUTED,.25f)
+        : level>=96 ? (dark() ? 0xF0A0A8 : 0xAC3D50) : material->accent;
+    MaterialGradient::solidRoundRect565(canvas,left+i*14,centerY-barHeight/2,8,barHeight,
+        std::min(4,barHeight/2),surface565(ink));
+    if ((i&7)==7) RenderService::checkpoint();
+  }
+  paintTray(1012,254,200,150);
+  char label[24];
+  snprintf(label,sizeof(label),"%u%%",unsigned(rms));
+  center(label,1112,294,INK,UiFont::sans40());
+  center(tr("输入电平", "Input level"),1112,338,MUTED,UiFont::sans16());
+  snprintf(label,sizeof(label),"%s %u%%",tr("峰值", "Peak"),unsigned(peak));
+  center(label,1112,370,renderedMicrophone.clipping && active
+      ? (dark() ? 0xF0A0A8 : 0xAC3D50) : MUTED,UiFont::sans16());
+  microphoneMeterAt=now;
+}
+
+void drawMicrophoneGain() {
+  paintTray(60,482,1160,80);
+  text(tr("麦克风增益", "Mic gain"),76,488,INK,UiFont::sans24());
+  drawSettingsSlider(532,uint8_t(renderedMicrophone.gain/2),0,renderedSettingsControl==14);
+  drawSettingsValue(532,uint8_t(renderedMicrophone.gain));
+}
+
+void drawMicrophoneMute() {
+  constexpr int x=40,y=608,w=1200,h=80;
+  const bool pressed=renderedSettingsControl==13;
+  paintBody(x,y,w,h);
+  keycap(x,y,w,h,pressed,renderedMicrophone.muted ? material->accent : 0);
+  const uint32_t ink=renderedMicrophone.available ? INK : MUTED;
+  drawMicrophoneIcon(474,648+(pressed?2:0),28,ink,renderedMicrophone.muted);
+  center(renderedMicrophone.muted ? tr("取消麦克风静音", "Unmute microphone")
+      : tr("麦克风静音", "Mute microphone"),690,648+(pressed?2:0),ink,UiFont::sans24());
+}
+
+void drawMicrophoneSettings(uint32_t now) {
+  drawMicrophoneStatus();
+  for (const auto& rect : {std::array<int,4>{40,216,1200,230},std::array<int,4>{40,470,1200,110}}) {
+    MaterialGradient::solidRoundRect565(canvas,rect[0],rect[1],rect[2],rect[3],24,
+        surface565(material->trayTop));
+    MaterialGradient::strokeRoundRect(canvas,rect[0],rect[1],rect[2],rect[3],24,.8f,
+        mix(material->trayTop,material->edge,.4f));
+  }
+  drawMicrophoneMeter(now,false);
+  drawMicrophoneGain();
+  drawMicrophoneMute();
 }
 
 void drawBluetoothToggle(const State& state) {
@@ -703,7 +838,6 @@ void drawBluetoothSettings(const State& state) {
 
 void drawSettings(const State& state) {
   text(tr("声音与显示", "Sound & display"), 64, 132, INK, UiFont::sans32());
-  text(tr("拖动滑杆，找到舒服的状态", "Make the controls feel right for you"), 64, 182, MUTED, UiFont::sans20());
   drawLanguageButton();
   for (int y : {216, 416}) {
     MaterialGradient::solidRoundRect565(canvas, 40, y, 1200, 176, 24,
@@ -715,13 +849,12 @@ void drawSettings(const State& state) {
   drawMuteButton();
   drawSettingsSlider(VOLUME_Y, renderedVolume, 0, renderedSettingsControl == 1);
   drawSettingsValue(VOLUME_Y, renderedVolume);
-  text(tr("静音不会改变音量", "Muting keeps your volume setting"), 320, 354, MUTED, UiFont::sans16());
   text(tr("屏幕亮度", "Brightness"), 76, 438, INK, UiFont::sans28());
   UiIcons::draw(canvas, UiIcons::Icon::Sun, 164, BRIGHTNESS_Y, 40, MUTED);
   drawSettingsSlider(BRIGHTNESS_Y, renderedBrightness, 10, renderedSettingsControl == 2);
   drawSettingsValue(BRIGHTNESS_Y, renderedBrightness);
-  text(tr("最低亮度 10%", "Minimum brightness: 10%"), 320, 554, MUTED, UiFont::sans16());
   drawBluetoothEntry(state);
+  drawMicrophoneEntry();
 }
 
 void updateSettingsSlider(int y, uint8_t value, uint8_t oldValue, uint8_t minimum,
@@ -763,7 +896,47 @@ bool updateSettings(bool soundChanged, const State& state) {
   }
   if (!sameBluetooth(state,previousState) || (renderedSettingsControl==6)!=(previousSettingsControl==6)) {
     drawBluetoothEntry(state);
+    present(40,608,584,80);
+    changed=true;
+  }
+  if (!sameMicrophoneControls(renderedMicrophone,previousMicrophone)
+      || (renderedSettingsControl==12)!=(previousSettingsControl==12)) {
+    drawMicrophoneEntry();
+    present(656,608,584,80);
+    changed=true;
+  }
+  return changed;
+}
+
+bool updateMicrophoneSettings(uint32_t now, bool meterDue) {
+  bool changed=false;
+  if (!sameMicrophoneIndicator(renderedMicrophone,previousMicrophone)
+      || renderedMicrophone.usbMounted!=previousMicrophone.usbMounted) {
+    drawMicrophoneStatus();
+    present(40,108,1200,96);
+    changed=true;
+  }
+  if (renderedMicrophone.gain!=previousMicrophone.gain
+      || (renderedSettingsControl==14)!=(previousSettingsControl==14)) {
+    drawMicrophoneGain();
+    present(60,482,1160,80);
+    changed=true;
+  }
+  if (renderedMicrophone.available!=previousMicrophone.available
+      || renderedMicrophone.muted!=previousMicrophone.muted
+      || (renderedSettingsControl==13)!=(previousSettingsControl==13)) {
+    drawMicrophoneMute();
     present(40,608,1200,80);
+    changed=true;
+  }
+  if (renderedMicrophone.muted!=previousMicrophone.muted
+      || renderedMicrophone.hostMuted!=previousMicrophone.hostMuted) {
+    memset(microphoneLevels,0,sizeof(microphoneLevels));
+    meterDue=true;
+  }
+  if (meterDue) {
+    drawMicrophoneMeter(now,true);
+    present(76,254,1136,150);
     changed=true;
   }
   return changed;
@@ -812,9 +985,10 @@ void drawHeader(const State& state) {
   UiIcons::draw(canvas, UiIcons::Icon::Logo, 51, 49, 44, INK);
   text("CODEX", 88, 27, INK, UiFont::sans32());
   text("micro", 90, 63, MUTED, UiFont::sans16());
-  center(settingsMode ? tr("设置", "Settings") : state.lightingPreview ? tr("状态演示", "Preview") : playMode ? tr("游戏", "Play") : tr("控制台", "Console"),
+  drawMicrophoneIndicator();
+  center(microphonePage ? tr("麦克风", "Microphone") : settingsMode ? tr("设置", "Settings") : state.lightingPreview ? tr("状态演示", "Preview") : playMode ? tr("游戏", "Play") : tr("控制台", "Console"),
          340, 49, INK, UiFont::sans24());
-  drawHostSignal(state);
+  if (!settingsMode && !playMode) drawHostSignal(state);
   const bool synced = state.usbMounted || state.bleReady;
   uint32_t connection = synced ? (dark() ? 0x9DD6BB : 0x3F8065) : MUTED;
   circleGradient(687, 49, 4, connection, connection);
@@ -944,9 +1118,8 @@ const char* actionCaption(const State& state, int index, HostFeedback::Action ac
   using A = HostFeedback::Action;
   // Tracked metadata cannot prove which focused desktop composer receives HID.
   // Never present tracked Fast/Plan/access as state of these native shortcuts.
-  if (action == A::Fast || action == A::Plan || action == A::Approve
-      || (action == A::Unknown && (index == 0 || index == 1)))
-    return tr("桌面快捷键", "Desktop shortcut");
+  if (action == A::Fast || action == A::Plan || action == A::Approve)
+    return "";
   const bool voice = action == A::Voice || (index == 4 && action == A::Unknown);
   if (voice) {
     const auto signal = HostFeedback::classify(state.hostLights, state.connected);
@@ -965,7 +1138,7 @@ const char* actionCaption(const State& state, int index, HostFeedback::Action ac
   if (!state.hostConfig.fresh || action == A::Unknown)
     return state.connected ? tr("配置未同步", "Not synced") : tr("桌面离线", "Host offline");
   if (action == A::None) return tr("桌面未绑定", "Not assigned");
-  return tr("桌面映射", "Desktop action");
+  return "";
 }
 
 void drawMappedAction(const State& state, int index, int layoutIndex,
@@ -981,12 +1154,13 @@ void drawMappedAction(const State& state, int index, int layoutIndex,
   keycap(x, 542, w, 150, active, active || receipt ? accent : 0);
   const int drop = active ? 2 : 0;
   const uint32_t ink = unassigned ? MUTED : INK;
-  UiIcons::draw(canvas, actionIcon(action, index), cx, 588 + drop, 32,
+  const char* caption=receipt ? transportReceipt(state,receipt==1) : actionCaption(state,index,action);
+  const bool hasCaption=caption[0]!=0;
+  UiIcons::draw(canvas, actionIcon(action, index), cx, (hasCaption ? 588 : 597) + drop, 32,
       active ? accent : ink);
   centerFitted(active && voice ? tr("已按住", "Held") : actionLabel(action, fallback),
-      cx, 635 + drop, w - 24, ink, UiFont::sans28());
-  center(receipt ? transportReceipt(state,receipt==1) : actionCaption(state, index, action),
-      cx, 668 + drop, receipt ? accent : MUTED, UiFont::sans16());
+      cx, (hasCaption ? 635 : 642) + drop, w - 24, ink, UiFont::sans28());
+  if (hasCaption) center(caption,cx,668+drop,receipt ? accent : MUTED,UiFont::sans16());
   renderedActionFeedback[index] = receipt;
 }
 
@@ -1100,7 +1274,7 @@ void drawEncoderConfig(const State& state) {
   }
   paintTray(372, 376, 128, 74);
   center(label, 436, 398, INK, UiFont::sans20());
-  const char* caption = mode != HostFeedback::Encoder::Unknown ? tr("配置·随桌面", "Desktop config")
+  const char* caption = mode != HostFeedback::Encoder::Unknown ? ""
       : !state.connected ? tr("桌面离线", "Host offline")
       : state.hostConfig.fresh ? tr("配置项未知", "Mode unknown") : tr("配置未同步", "Not synced");
   center(caption,
@@ -1110,7 +1284,6 @@ void drawEncoderConfig(const State& state) {
 void drawChatFeedback(const State& state) {
   const auto& chat=state.hostChat;
   paintTray(710,210,184,26);
-  center(tr("桌面操控", "Desktop control"),802,223,MUTED,UiFont::sans20());
   paintBody(28,500,1224,36);
   center(tr("指定聊天设置", "Tracked settings"),152,518,MUTED,UiFont::sans16());
   const char* speed=!chat.fresh ? tr("快速：未知", "Fast: unknown")
@@ -1182,12 +1355,13 @@ bool updateHeader(const State& state) {
       || state.connected != previousState.connected
       || bool(state.rpc_count) != bool(previousState.rpc_count)
       || state.lightingPreview != previousState.lightingPreview
+      || !sameMicrophoneIndicator(renderedMicrophone,previousMicrophone)
       || headerHeld != previousHeaderHeld;
   if (structural) {
     paintBody(28, 5, 1224, 91);
     drawHeader(state);
     present(28, 5, 1224, 91);
-  } else if (!sameLights(state.hostLights, previousState.hostLights)) {
+  } else if (!settingsMode && !playMode && !sameLights(state.hostLights, previousState.hostLights)) {
     paintBody(420, 31, 250, 38);
     drawHostSignal(state);
     present(420, 31, 250, 38);
@@ -1376,10 +1550,16 @@ bool render(const State& liveState) {
   static State state;
   state = liveState;
   advanceTitleClocks(snapshot, now);
+  const bool micControlsChanged=!sameMicrophoneControls(snapshot.microphone,renderedMicrophone);
+  const bool micIndicatorChanged=!sameMicrophoneIndicator(snapshot.microphone,renderedMicrophone);
+  const bool micMeterDue=snapshot.settingsMode && snapshot.microphonePage
+      && !snapshot.effectsFrozen && !snapshot.finger && now-microphoneMeterAt>=40;
   const bool immediate = localeChanged || titleTestRevision != appliedTitleTestRevision || displayInvalidated || snapshot.held != held || snapshot.playMode != playMode
       || snapshot.settingsMode != settingsMode
       || snapshot.bluetoothPage != bluetoothPage
+      || snapshot.microphonePage != microphonePage
       || snapshot.bluetoothForgetConfirm != bluetoothForgetConfirm
+      || micIndicatorChanged || (micControlsChanged && snapshot.settingsMode)
       || snapshot.finger != finger || snapshot.fullPresent != forceFullPresent
       || visual.revision != controls.revision
       || snapshot.effectsFrozen != effectsFrozen
@@ -1398,12 +1578,13 @@ bool render(const State& liveState) {
   const bool titleDue = !snapshot.playMode && !snapshot.settingsMode && !snapshot.finger
       && titleWorkDue() && now - fxLastStep >= 16
       && (titleTestSlot >= 0 || now - lastInteraction >= 80);
-  if (frame && now - lastFrame < 50 && !immediate && !fxDue && !titleDue) return false;
+  if (frame && now - lastFrame < 50 && !immediate && !fxDue && !titleDue && !micMeterDue) return false;
   const bool themeChanged = snapshot.themeRevision != appliedThemeRevision;
   const bool soundChanged = snapshot.soundRevision != appliedSoundRevision;
   const bool full = !frame || snapshot.playMode != previousMode
       || snapshot.settingsMode != previousSettingsMode
       || snapshot.bluetoothPage != previousBluetoothPage
+      || snapshot.microphonePage != previousMicrophonePage
       || snapshot.bluetoothForgetConfirm != previousBluetoothForgetConfirm
       || themeChanged || localeChanged;
   finger = snapshot.finger;
@@ -1412,6 +1593,10 @@ bool render(const State& liveState) {
   playMode = snapshot.playMode;
   settingsMode = snapshot.settingsMode;
   bluetoothPage = snapshot.bluetoothPage;
+  microphonePage = snapshot.microphonePage;
+  renderedMicrophone = snapshot.microphone;
+  if (microphonePage && !previousMicrophonePage)
+    memset(microphoneLevels,0,sizeof(microphoneLevels));
   bluetoothForgetConfirm = snapshot.bluetoothForgetConfirm;
   forceFullPresent = snapshot.fullPresent;
   effectsFrozen = snapshot.effectsFrozen;
@@ -1441,7 +1626,8 @@ bool render(const State& liveState) {
     drawHeader(state);
     profiling.fullHeader = max(profiling.fullHeader, micros() - phaseStarted);
     phaseStarted = micros();
-    if (settingsMode && bluetoothPage) drawBluetoothSettings(state);
+    if (settingsMode && microphonePage) drawMicrophoneSettings(now);
+    else if (settingsMode && bluetoothPage) drawBluetoothSettings(state);
     else if (settingsMode) drawSettings(state);
     else if (playMode) MicroGames::render(canvas, now, true);
     else drawDashboard(state);
@@ -1451,7 +1637,8 @@ bool render(const State& liveState) {
     profiling.fullPresent = max(profiling.fullPresent, micros() - phaseStarted);
   } else {
     drew |= updateHeader(state);
-    if (settingsMode && bluetoothPage) drew |= updateBluetoothSettings(state);
+    if (settingsMode && microphonePage) drew |= updateMicrophoneSettings(now,micMeterDue);
+    else if (settingsMode && bluetoothPage) drew |= updateBluetoothSettings(state);
     else if (settingsMode) drew |= updateSettings(soundChanged,state);
     else if (playMode) {
       if (MicroGames::render(canvas, now, false)) {
@@ -1522,6 +1709,8 @@ bool render(const State& liveState) {
   previousMode = playMode;
   previousSettingsMode = settingsMode;
   previousBluetoothPage = bluetoothPage;
+  previousMicrophonePage = microphonePage;
+  previousMicrophone = renderedMicrophone;
   previousBluetoothForgetConfirm = bluetoothForgetConfirm;
   previousHeaderHeld = headerHeld;
   previousEffectsFrozen = effectsFrozen;
@@ -1553,6 +1742,7 @@ Event touch(int16_t x, int16_t y, bool pressed) {
     } else if (gameButton) {
       if (input.settingsMode) {
         if (input.bluetoothForgetConfirm) input.bluetoothForgetConfirm=false;
+        else if (input.microphonePage) input.microphonePage=false;
         else if (input.bluetoothPage) input.bluetoothPage=false;
         else input.settingsMode = false;
         input.playMode = false;
@@ -1561,6 +1751,7 @@ Event touch(int16_t x, int16_t y, bool pressed) {
     } else {
       input.settingsMode = !input.settingsMode;
       input.bluetoothPage = false;
+      input.microphonePage = false;
       input.bluetoothForgetConfirm = false;
       input.playMode = false;
       input.headerControl = 3;
@@ -1588,6 +1779,27 @@ Event touch(int16_t x, int16_t y, bool pressed) {
     return event;
   }
   if (input.settingsMode) {
+    if (input.microphonePage) {
+      if (pressed && !wasDown) {
+        input.settingsControl=4;
+        if (input.microphone.available && inside(x,y,40,608,1200,80)) {
+          input.settingsControl=13;
+          event.key="mic_mute"; event.action=1;
+        } else if (input.microphone.available && inside(x,y,280,488,944,88)) {
+          input.settingsControl=14;
+        }
+      }
+      if (pressed && input.settingsControl==14) {
+        const uint16_t value=x<=320 ? 0 : x>=1120 ? 200 : uint16_t((int(x)-320+2)/4);
+        if (input.microphone.gain!=value) {
+          input.microphone.gain=value;
+          event.key="mic_gain"; event.action=1; event.distance=value;
+        }
+      }
+      if (!pressed) input.settingsControl=0;
+      portEXIT_CRITICAL(&inputMux);
+      return event;
+    }
     if (input.bluetoothPage) {
       if (pressed && !wasDown) {
         input.settingsControl=4;
@@ -1631,10 +1843,19 @@ Event touch(int16_t x, int16_t y, bool pressed) {
         input.settingsControl = 5;
         UiLocale::setLanguage(UiLocale::english() ? UiLocale::Language::Chinese
                                                  : UiLocale::Language::English);
-      } else if (inside(x,y,40,608,1200,80)) {
+      } else if (inside(x,y,40,608,584,80)) {
         input.settingsControl=6;
         input.bluetoothPage=true;
+        input.microphonePage=false;
         input.bluetoothForgetConfirm=false;
+      } else if (inside(x,y,656,608,584,80)) {
+        input.settingsControl=12;
+        input.microphonePage=true;
+        input.bluetoothPage=false;
+        input.bluetoothForgetConfirm=false;
+        MicroControls::cancel();
+        input.held=MicroControls::visual().held;
+        MicroControls::nextEvent(event);
       } else if (inside(x, y, 280, 256, 944, 88)) input.settingsControl = 1;
       else if (inside(x, y, 280, 456, 944, 88)) input.settingsControl = 2;
       else input.settingsControl = 4;
@@ -1763,6 +1984,21 @@ void setBrightness(uint8_t value) {
 bool settingsOpen() {
   portENTER_CRITICAL(&inputMux);
   const bool open = input.settingsMode;
+  portEXIT_CRITICAL(&inputMux);
+  return open;
+}
+void setMicrophoneState(const MicState& value) {
+  MicState state=value;
+  state.gain=std::min<uint16_t>(200,state.gain);
+  state.rms=std::min<uint8_t>(100,state.rms);
+  state.peak=std::min<uint8_t>(100,state.peak);
+  portENTER_CRITICAL(&inputMux);
+  input.microphone=state;
+  portEXIT_CRITICAL(&inputMux);
+}
+bool microphoneOpen() {
+  portENTER_CRITICAL(&inputMux);
+  const bool open=input.settingsMode && input.microphonePage;
   portEXIT_CRITICAL(&inputMux);
   return open;
 }

@@ -6,6 +6,8 @@ Turn **M5Stack Tab5** into a touch controller for Codex. It preserves Micro's di
 
 This is experimental third-party compatible firmware, unaffiliated with OpenAI, M5Stack, or Work Louder. Latest version: **0.12.0 with USB/Bluetooth support**. Hardware validation scope and known limits are described below.
 
+The source checkout is developing **0.13.0-dev.1 USB microphone support**, providing standard USB audio input with meters, mute, and gain. It is not released, and the 0.12.0 download below does not include it. Bluetooth microphone audio is deferred; existing Bluetooth controls and title synchronization remain available. See the [microphone guide](docs/MICROPHONE.en.md) for the reason, setup, and validation scope.
+
 ## Download and flash
 
 Open the [0.12.0 Release](https://github.com/atovk/tab5-codex-micro/releases/tag/v0.12.0), download **`tab5-codex-micro-0.12.0.zip`**, and extract the entire archive. It includes compiled firmware, the title font, a flashing helper, checksums, and Chinese/English instructions. **No PlatformIO installation or compilation is required.**
@@ -43,6 +45,7 @@ These are real 0.12.0 Tab5 framebuffer captures with an English interface and ex
 - **Separate chat settings strip:** an optional bridge displays the designated chat's accepted settings for its next send: Fast/Standard, Plan/Default, and permission presets including **Full access**. The strip is read-only; missing or expired metadata is unknown. These values no longer serve as the states of the native Fast/Plan/Approve buttons.
 - **Two languages and themes:** the console, settings, and games support Chinese/English and matching light-metal/dark-graphite themes. A full flash defaults to English; the selected language survives ordinary restarts.
 - **Subtle sound and preferences:** short sounds accompany keys, dial steps, and joystick actions. Volume, mute, brightness, and language are adjustable and survive restarts.
+- **Onboard USB microphone (0.13.0-dev.1 in development):** select **Tab5 Microphone**, a standard UAC1 input with 16kHz, 16-bit mono audio. The microphone page offers meters, mute, and gain. Voice keeps its desktop mapping without automatically choosing a source. Bluetooth does not carry microphone audio.
 - **Automatic orientation:** the IMU selects between two landscape orientations and updates touch coordinates. Screw holes down is the default reference. Flat placement, movement, and active touch hold the current orientation.
 - **Three offline games:** a space shooter, falling blocks, and a dinosaur runner, with pause, resume, and restart.
 
@@ -58,14 +61,14 @@ Connect USB-C, or pair Bluetooth using the steps below. Configure keys, dial beh
 | Tap an Agent key | Trigger its corresponding desktop chat shortcut |
 | Hold/release a command key | Preserve native press/release, including push-to-talk mappings |
 | Sun/moon at the top right | Switch and save the theme |
-| Gear at the top right | Volume, mute, brightness, language, and Connections |
+| Gear at the top right | Volume, mute, brightness, language, Connections, and Microphone (0.13.0-dev.1 development build) |
 | Games at the top right | Open the local game library |
 
 Fast/Plan/Approve retain their native desktop behavior; they do not establish that the action targets the chat in the settings strip. The interface explicitly says **Target not verified**. A brief **USB not sent** or **BLE not sent** receipt means submission failed or the queue rejected the event, with no promise of later delivery. **USB submitted** or **BLE submitted** only means that the corresponding transport stack accepted the complete message; it does not acknowledge desktop execution.
 
 The header distinguishes USB and Bluetooth connections; **Last** lighting describes the last native lighting information received. An observed native session, a current transport connection, and fresh bridge metadata are independent evidence and cannot substitute for each other.
 
-The desktop settings determine the final behavior of dial modes, command keys, joystick actions, and voice. Default voice input uses the **computer microphone**, not the Tab5 microphone. The auxiliary key may be unassigned until separate microphone keys are enabled and configured on the desktop.
+The desktop settings determine the final behavior of dial modes, command keys, joystick actions, and voice. **Version 0.12.0 does not provide Tab5 microphone audio.** The USB microphone development build still requires selecting **Tab5 Microphone** in the computer or application. The Voice key does not switch audio sources or prove that Codex has started recording. With a Bluetooth-only connection, continue using the computer microphone. The auxiliary key may be unassigned until separate microphone keys are enabled and configured on the desktop.
 
 ## Bluetooth pairing and reconnection
 

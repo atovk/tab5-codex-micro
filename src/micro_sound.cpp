@@ -19,6 +19,7 @@ struct Request { Feedback::Cue cue; uint8_t variant; uint32_t at; bool tone=fals
 QueueHandle_t queue=nullptr;
 Feedback::Policy policy;
 std::atomic<bool> available{false}, enabled{true};
+std::atomic<bool> microphoneActive{false};
 std::atomic<uint8_t> volume{45};
 std::atomic<uint32_t> queued{0}, played{0}, released{0}, dropped{0}, suppressed{0};
 std::atomic<uint32_t> enqueueMax{0}, startMax{0};
@@ -30,7 +31,7 @@ void maximum(std::atomic<uint32_t>& value,uint32_t next) {
   uint32_t prior=value.load();
   while (prior<next && !value.compare_exchange_weak(prior,next)) {}
 }
-uint8_t master() { return enabled.load() ? (volume.load()*160+50)/100 : 0; }
+uint8_t master() { return enabled.load() && !microphoneActive.load() ? (volume.load()*160+50)/100 : 0; }
 UiSounds::Clip clip(const Request& request) {
   switch (request.cue) {
     case Feedback::Cue::Press: return request.variant ? UiSounds::PressHigh : UiSounds::Press;
@@ -46,7 +47,7 @@ void worker(void*) {
   for (;;) {
     if (xQueueReceive(queue,&request,portMAX_DELAY)!=pdTRUE) continue;
     if (request.cue==Feedback::Cue::None) { M5.Speaker.stop(0); continue; }
-    if (!enabled.load() || !volume.load() || millis()-request.at>45
+    if (!enabled.load() || microphoneActive.load() || !volume.load() || millis()-request.at>45
         || M5.Speaker.isPlaying(0)) { dropped.fetch_add(1); continue; }
     const uint32_t began=micros();
     const auto sample=clip(request);
@@ -58,7 +59,7 @@ void worker(void*) {
 }
 bool submit(Feedback::Cue cue,uint8_t variant=0,bool tone=false) {
   if (cue==Feedback::Cue::None) return false;
-  if (!available.load() || !enabled.load() || !volume.load()) { suppressed.fetch_add(1); return false; }
+  if (!available.load() || !enabled.load() || microphoneActive.load() || !volume.load()) { suppressed.fetch_add(1); return false; }
   const uint32_t now=millis();
   const uint32_t cooldown=(cue==Feedback::Cue::DetentCW || cue==Feedback::Cue::DetentCC) ? 25 : 45;
   if (hasPlayed && now-lastAt<cooldown) { dropped.fetch_add(1); return false; }
@@ -96,6 +97,14 @@ void configure(bool sound,uint8_t level) {
   enabled.store(sound); volume.store(constrain(level,0,100));
   M5.Speaker.setVolume(master());
   if ((!sound || !level) && queue) {
+    const Request stop{Feedback::Cue::None,0,millis()};
+    xQueueOverwrite(queue,&stop);
+  }
+}
+void setMicrophoneActive(bool active) {
+  if (microphoneActive.exchange(active)==active) return;
+  M5.Speaker.setVolume(master());
+  if (active && queue) {
     const Request stop{Feedback::Cue::None,0,millis()};
     xQueueOverwrite(queue,&stop);
   }

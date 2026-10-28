@@ -3,6 +3,9 @@
 #include "agent_status.h"
 #include "device_settings.h"
 #include "micro_sound.h"
+#include "micro_mic.h"
+#include "usb_microphone.h"
+#include "firmware_version.h"
 #include "micro_orientation.h"
 #include "title_font.h"
 #include "ui_locale.h"
@@ -343,13 +346,13 @@ void process(Channel& source) {
   if (!strcmp(method,"device.status")) {
     source.seen=true;
     JsonObject r=response["result"].to<JsonObject>();
-    r["version"]="tab5-micro-0.12.0"; r["profile_index"]=0; r["layer_index"]=0;
+    r["version"]=TAB5_FIRMWARE_ID; r["profile_index"]=0; r["layer_index"]=0;
     int battery=M5.Power.getBatteryLevel();
     if (battery>=0 && battery<=100) r["battery"]=battery;
     r["is_charging"]=M5.Power.isCharging()==m5::Power_Class::is_charging_t::is_charging;
   } else if (!strcmp(method,"sys.version")) {
     source.seen=true;
-    response["result"]["version"]="tab5-micro-0.12.0";
+    response["result"]["version"]=TAB5_FIRMWARE_ID;
   } else if (!strcmp(method,"v.oai.thstatus")) {
     for (JsonObject item:req["params"].as<JsonArray>()) {
       int i=item["id"]|-1; if (i<0 || i>5) continue;
@@ -701,7 +704,7 @@ void diagnostics() {
   if (diagnosticFrameActive || deferredLines.size()) { diagnosticsDeferred=true; return; }
   RxDiagnostics snapshot;
   portENTER_CRITICAL(&rxLock); snapshot=rx; portEXIT_CRITICAL(&rxLock);
-  JsonDocument d; d["firmware"]="tab5-micro-0.12.0"; d["usb_ready"]=hid.ready(); d["usb_mounted"]=tud_mounted();
+  JsonDocument d; d["firmware"]=TAB5_FIRMWARE_ID; d["usb_ready"]=hid.ready(); d["usb_mounted"]=tud_mounted();
   d["theme"]=MicroUI::theme()==MicroUI::Theme::Dark ? "dark" : "light";
   d["language"]=UiLocale::english() ? "en" : "zh";
   d["uptime_ms"]=millis();
@@ -721,6 +724,14 @@ void diagnostics() {
   d["audio"]["released"]=audio.released; d["audio"]["dropped"]=audio.dropped;
   d["audio"]["suppressed"]=audio.suppressed;
   d["audio"]["enqueue_max_us"]=audio.enqueueMax; d["audio"]["start_max_us"]=audio.startMax;
+  const auto mic=MicroMic::status();
+  const auto usbMic=UsbMicrophone::status();
+  d["microphone"]["available"]=mic.available; d["microphone"]["active"]=mic.active;
+  d["microphone"]["muted"]=mic.muted; d["microphone"]["gain"]=mic.gain;
+  d["microphone"]["level"]=mic.level; d["microphone"]["peak"]=mic.peak;
+  d["microphone"]["usb_streaming"]=usbMic.streaming;
+  d["microphone"]["host_muted"]=usbMic.hostMuted;
+  d["microphone"]["page_open"]=MicroUI::microphoneOpen();
   const auto orientation=MicroOrientation::diagnostics();
   d["orientation"]["imu_available"]=orientation.available;
   d["orientation"]["rotation"]=orientation.rotation; d["orientation"]["blocked"]=orientation.blocked;

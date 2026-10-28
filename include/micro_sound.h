@@ -13,6 +13,9 @@ struct Diagnostics {
 };
 bool begin(bool enabled, uint8_t volume);
 void configure(bool enabled, uint8_t volume);
+// Suppress local speaker cues during a live microphone stream, without
+// changing the saved volume or rebuilding the shared I2S clock source.
+void setMicrophoneActive(bool active);
 void event(const MicroUI::Event& event, bool capture);
 void localPress(bool capture);
 bool test(Feedback::Cue cue);

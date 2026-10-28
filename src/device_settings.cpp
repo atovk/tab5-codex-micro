@@ -12,6 +12,9 @@ uint32_t encode(const Values& value) {
   return 0xA5000000u | uint32_t(value.sound) | uint32_t(value.volume)<<1
       | uint32_t(value.brightness)<<8 | uint32_t(value.english)<<15;
 }
+uint32_t encodeMic(const Values& value) {
+  return 0xA6000000u | uint32_t(value.micMuted) | uint32_t(value.micGain)<<1;
+}
 }
 Values begin() {
   ready=storage.begin("micro-hw",false);
@@ -21,13 +24,20 @@ Values begin() {
     // Bit 15 was unused by earlier firmware: existing preferences retain
     // Chinese, while a fresh install uses the English default in Values.
     current={bool(saved&1),volume,brightness,bool(saved&(1u<<15))};
+  const uint32_t mic=ready ? storage.getUInt("mic",0) : 0;
+  const uint16_t micGain=(mic>>1)&255;
+  if ((mic&0xFFFFFE00u)==0xA6000000u && micGain<=200) {
+    current.micMuted=bool(mic&1);
+    current.micGain=micGain;
+  }
   return current;
 }
 void update(const Values& values) {
   Values next=values;
   next.volume=constrain(next.volume,0,100);
   next.brightness=constrain(next.brightness,10,100);
-  if (encode(next)==encode(current)) return;
+  next.micGain=constrain(next.micGain,0,200);
+  if (encode(next)==encode(current) && encodeMic(next)==encodeMic(current)) return;
   current=next; dirty=true; changed=millis();
 }
 void poll(bool touching) {
@@ -37,7 +47,8 @@ void poll(bool touching) {
     if (dirty) changed=millis();
   }
   if (dirty && !touching && millis()-changed>=600 && ready) {
-    if (storage.putUInt("prefs",encode(current))==sizeof(uint32_t)) dirty=false;
+    if (storage.putUInt("prefs",encode(current))==sizeof(uint32_t)
+        && storage.putUInt("mic",encodeMic(current))==sizeof(uint32_t)) dirty=false;
     else changed=millis();
   }
 }
